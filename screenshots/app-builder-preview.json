@@ -1,0 +1,36 @@
+{
+  "url": "http://127.0.0.1:8080/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "PITWALL",
+      "hasCanvas": false,
+      "bodyTextLen": 2171,
+      "bodyTextHash": "d6c79d0978e1c500e72055e5e23434cb2c29ffda83105e4e198b25cfb98884ce",
+      "bodyTextPrefix": "PITWALL SINGAPORE GRAND PRIX · MARINA BAY TIMING STANDINGS LIVE ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "PITWALL",
+      "hasCanvas": false,
+      "bodyTextLen": 773,
+      "bodyTextHash": "93cc64845b94e50baf2cd5cea816ded73c37e7b2e2aebb2db8cefaca043cbd65",
+      "bodyTextPrefix": "PITWALL SINGAPORE GRAND PRIX · MARINA BAY TIMING STANDINGS LIVE ",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-preview-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-preview.json"
+}

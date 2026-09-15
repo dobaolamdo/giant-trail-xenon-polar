@@ -1,0 +1,38 @@
+{
+  "url": "http://127.0.0.1:8081/",
+  "viewports": {
+    "desktop": {
+      "width": 1280,
+      "height": 800,
+      "status": 200,
+      "title": "PITWALL",
+      "hasCanvas": false,
+      "bodyTextLen": 2069,
+      "bodyTextHash": "fd8c525418955bbff5b618e1373824b7e0ff60f840b1d49e26111d3cc64d5692",
+      "bodyTextPrefix": "PITWALL SINGAPORE GRAND PRIX · MARINA BAY LIVE Race LAP 19/62 AI",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built.png"
+    },
+    "mobile": {
+      "width": 390,
+      "height": 844,
+      "status": 200,
+      "title": "PITWALL",
+      "hasCanvas": false,
+      "bodyTextLen": 678,
+      "bodyTextHash": "477a87019888e2652da128dccc486334358d45a0b7e05f6acb9268f1c46b88e5",
+      "bodyTextPrefix": "PITWALL SINGAPORE GRAND PRIX · MARINA BAY LIVE Race LAP 19/62 AI",
+      "horizontalOverflow": false,
+      "consoleErrors": [],
+      "pageErrors": [],
+      "screenshot": "/workspace/screenshots/app-builder-built-mobile.png"
+    }
+  },
+  "brandWarnings": [],
+  "authWarnings": [],
+  "verdictFile": "/workspace/screenshots/app-builder-built.json",
+  "divergesFromBaseline": false,
+  "baselineReasons": []
+}
