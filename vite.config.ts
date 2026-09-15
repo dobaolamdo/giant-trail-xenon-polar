@@ -83,13 +83,14 @@ function authPopupPlugin(): Plugin {
             res.end("Method Not Allowed");
             return;
           }
-
           const host = String(
             req.headers["x-forwarded-host"] ?? req.headers.host ?? "localhost:8080",
           );
           const proto = String(
             req.headers["x-forwarded-proto"] ??
-              ((req.socket as { encrypted?: boolean } | undefined)?.encrypted ? "https" : "http"),
+              ((req.socket as { encrypted?: boolean } | undefined)?.encrypted
+                ? "https"
+                : "http"),
           );
           const requestHeaders = new Headers();
           for (const [key, value] of Object.entries(req.headers)) {
@@ -103,17 +104,16 @@ function authPopupPlugin(): Plugin {
           // Ensure Host is the public preview host so Better Auth's dynamic
           // baseURL / redirect_uri match the popup origin.
           if (!requestHeaders.has("host")) requestHeaders.set("host", host);
-
           const request = new Request(`${proto}://${host}${rawUrl}`, {
             method: "GET",
             headers: requestHeaders,
           });
-
-          const mod = (await server.ssrLoadModule("/src/lib/auth/popup.server.ts")) as {
+          const mod = (await server.ssrLoadModule(
+            "/src/lib/auth/popup.server.ts",
+          )) as {
             handleAuthPopupRequest: (req: Request) => Promise<Response>;
           };
           const response = await mod.handleAuthPopupRequest(request);
-
           res.statusCode = response.status;
           // Preserve multiple Set-Cookie headers (OAuth state + session).
           const setCookies =
@@ -177,6 +177,7 @@ export default defineConfig(({ command, isPreview }) => ({
             serverDir: "./server",
             externals: {
               inline: ["tslib"],
+            },
           }),
         ]
       : []),
