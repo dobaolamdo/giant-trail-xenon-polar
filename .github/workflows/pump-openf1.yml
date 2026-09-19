@@ -1,0 +1,29 @@
+name: Pump OpenF1 races
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+jobs:
+  pump:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Pump each 2024 Race session
+        env:
+          API: ${{ secrets.PITWALL_API_URL }}
+          SECRET: ${{ secrets.PUMP_SECRET }}
+        run: |
+          set -e
+          KEYS="9472 9480 9488 9496 9673 9507 9515 9523 9531 9539 9550 9558 9566 9574 9582 9590 9598 9606 9617 9625 9636 9644 9655 9662"
+
+          for KEY in $KEYS; do
+            echo "=== Pump session_key=$KEY ==="
+            CODE=$(curl -s -o /tmp/pump.json -w "%{http_code}" \
+              --max-time 300 \
+              "${API}/api/pump?secret=${SECRET}&session_key=${KEY}" || true)
+            echo "HTTP $CODE"
+            head -c 500 /tmp/pump.json || true
+            echo ""
+            sleep 20
+          done
