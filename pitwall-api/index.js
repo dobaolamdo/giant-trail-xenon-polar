@@ -34,7 +34,8 @@ app.get("/api/leaderboard", async (req, res) => {
     const [result] = await pool.query("CALL Get_Live_Leaderboard(?)", [
       sessionKey,
     ]);
-    const rows = Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
+    const rows =
+      Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -47,7 +48,8 @@ app.get("/api/session/:key", async (req, res) => {
     const [result] = await pool.query("CALL Get_Session_Info(?)", [
       Number(req.params.key),
     ]);
-    const rows = Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
+    const rows =
+      Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -62,20 +64,20 @@ app.get("/api/laps", async (req, res) => {
       sessionKey,
       driver,
     ]);
-    const rows = Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
+    const rows =
+      Array.isArray(result) && Array.isArray(result[0]) ? result[0] : result;
     res.json(rows);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Pump OpenF1 historical → Aiven (chạy online, không cần máy)
+// Pump OpenF1 historical → Aiven
 app.get("/api/pump", async (req, res) => {
   const secret = req.query.secret;
   if (secret !== process.env.PUMP_SECRET) {
     return res.status(403).json({ error: "forbidden" });
   }
-
   const SESSION_KEY = Number(req.query.session_key);
   if (!SESSION_KEY) {
     return res.status(400).json({ error: "missing session_key" });
@@ -88,8 +90,51 @@ app.get("/api/pump", async (req, res) => {
       return r.json();
     };
 
+    // 1) Session metadata từ OpenF1 → seasons / meetings / sessions
+    const sessions = await get(
+      `https://api.openf1.org/v1/sessions?session_key=${SESSION_KEY}`,
+    );
+    const s = Array.isArray(sessions) ? sessions[0] : null;
+    if (s) {
+      await pool.query(
+        `INSERT IGNORE INTO seasons (year, name) VALUES (?, ?)`,
+        [s.year, `${s.year} FIA Formula One World Championship`],
+      );
+      await pool.query(
+        `INSERT IGNORE INTO meetings (
+           meeting_key, year, meeting_name, circuit_short_name, country_name, date_start
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          s.meeting_key,
+          s.year,
+          `${s.location || s.circuit_short_name || "Meeting"} Grand Prix`,
+          s.circuit_short_name || null,
+          s.country_name || null,
+          s.date_start
+            ? String(s.date_start).slice(0, 19).replace("T", " ")
+            : null,
+        ],
+      );
+      await pool.query(
+        `INSERT IGNORE INTO sessions (
+           session_key, meeting_key, session_name, session_type, date_start, total_laps
+         ) VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          s.session_key,
+          s.meeting_key,
+          s.session_name || "Race",
+          s.session_type || "Race",
+          s.date_start
+            ? String(s.date_start).slice(0, 19).replace("T", " ")
+            : null,
+          null,
+        ],
+      );
+    }
+
+    // 2) Drivers
     const drivers = await get(
-      `https://api.openf1.org/v1/drivers?session_key=${SESSION_KEY}`
+      `https://api.openf1.org/v1/drivers?session_key=${SESSION_KEY}`,
     );
     let driverCount = 0;
     for (const d of drivers) {
@@ -97,7 +142,7 @@ app.get("/api/pump", async (req, res) => {
       const team = d.team_name || "Unknown";
       await pool.query(
         `INSERT IGNORE INTO teams (team_name, team_colour) VALUES (?, ?)`,
-        [team, d.team_colour || null]
+        [team, d.team_colour || null],
       );
       await pool.query(
         `INSERT INTO drivers (driver_number, name_acronym, full_name, team_name)
@@ -111,13 +156,14 @@ app.get("/api/pump", async (req, res) => {
           d.name_acronym || String(d.driver_number),
           d.full_name || d.broadcast_name || "Unknown",
           team,
-        ]
+        ],
       );
       driverCount++;
     }
 
+    // 3) Laps
     const laps = await get(
-      `https://api.openf1.org/v1/laps?session_key=${SESSION_KEY}`
+      `https://api.openf1.org/v1/laps?session_key=${SESSION_KEY}`,
     );
     let lapCount = 0;
     for (const lap of laps) {
@@ -140,7 +186,7 @@ app.get("/api/pump", async (req, res) => {
           lap.duration_sector_1 ?? null,
           lap.duration_sector_2 ?? null,
           lap.duration_sector_3 ?? null,
-        ]
+        ],
       );
       lapCount++;
     }
