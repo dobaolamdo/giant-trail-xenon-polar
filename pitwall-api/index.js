@@ -72,6 +72,39 @@ app.get("/api/laps", async (req, res) => {
   }
 });
 
+app.get("/api/sessions", async (req, res) => {
+  const year = Number(req.query.year || 2024);
+  try {
+    const [rows] = await pool.query(
+      `SELECT
+         s.session_key,
+         s.session_name,
+         s.session_type,
+         s.date_start,
+         s.meeting_key,
+         m.meeting_name,
+         m.circuit_short_name,
+         m.country_name,
+         m.year
+       FROM sessions s
+       LEFT JOIN meetings m ON m.meeting_key = s.meeting_key
+       WHERE m.year = ? OR s.session_key IN (
+         SELECT session_key FROM laps GROUP BY session_key
+       )
+       ORDER BY s.date_start IS NULL, s.date_start, s.session_key`,
+      [year],
+    );
+    // Lọc năm nếu meeting null: vẫn trả session có lap
+    const filtered = year
+      ? rows.filter((r) => r.year == null || Number(r.year) === year)
+      : rows;
+    res.json(filtered.length ? filtered : rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Pump OpenF1 historical → Aiven
 app.get("/api/pump", async (req, res) => {
   const secret = req.query.secret;
