@@ -61,9 +61,9 @@ export function PitwallShell() {
     bindSession(feed.duration, start, driver);
   }, [sessionKey, live, bindSession]);
 
-  // Lấy leaderboard thật từ Aiven (session đã pump OpenF1)
+  // Mọi session OpenF1 đã pump (key >= 9000), không chỉ 9472
   useEffect(() => {
-    if (sessionKey !== 9472) {
+    if (sessionKey < 9000) {
       setApiBoard(null);
       return;
     }
@@ -123,7 +123,10 @@ export function PitwallShell() {
   function pick(n: number) {
     selectDriver(n);
     setTab("driver");
-    if (typeof window !== "undefined" && window.matchMedia("(max-width: 1023px)").matches) {
+    if (
+      typeof window !== "undefined" &&
+      window.matchMedia("(max-width: 1023px)").matches
+    ) {
       setMobileOpen(true);
     }
   }
@@ -174,7 +177,9 @@ export function PitwallShell() {
         <SheetContent side="bottom" className="sheet-mobile">
           <SheetHeader>
             <SheetTitle>Car detail</SheetTitle>
-            <SheetDescription>Lap history, race control and pit stops.</SheetDescription>
+            <SheetDescription>
+              Lap history, race control and pit stops.
+            </SheetDescription>
           </SheetHeader>
           <div className="min-h-0 flex-1 overflow-hidden">{side}</div>
         </SheetContent>
@@ -231,7 +236,9 @@ function SidePanel({
         )}
       </div>
       <div className="min-h-0 flex-1 overflow-hidden">
-        {tab === "driver" && <DriverDetail driver={driver} row={row} laps={laps} />}
+        {tab === "driver" && (
+          <DriverDetail driver={driver} row={row} laps={laps} />
+        )}
         {live && tab === "control" && (
           <div className="h-full overflow-y-auto">
             <RaceControlList messages={control} />
