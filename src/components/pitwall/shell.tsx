@@ -10,6 +10,7 @@ import {
   hasTimingFeed,
   isLiveSession,
 } from "@/lib/f1/api";
+import type { LeaderboardRow } from "@/lib/f1/types";
 import { useRaceClock } from "@/lib/f1/clock";
 import { usePitwall } from "@/lib/f1/store";
 import { Button } from "@/components/ui/button";
@@ -45,6 +46,7 @@ export function PitwallShell() {
   const replay = hasTimingFeed(sessionKey);
   const [tab, setTab] = useState<SideTab>("driver");
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [apiBoard, setApiBoard] = useState<LeaderboardRow[] | null>(null);
 
   useKeyboardPlayback();
 
@@ -59,10 +61,52 @@ export function PitwallShell() {
     bindSession(feed.duration, start, driver);
   }, [sessionKey, live, bindSession]);
 
-  const board = useMemo(
+  // Lấy leaderboard thật từ Aiven (session đã pump OpenF1)
+  useEffect(() => {
+    if (sessionKey !== 9472) {
+      setApiBoard(null);
+      return;
+    }
+    const base =
+      import.meta.env.VITE_API_URL || "https://f1-dashboard-sbrl.onrender.com";
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(
+          `${base}/api/leaderboard?session_key=${sessionKey}`,
+        );
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data)) return;
+        const rows: LeaderboardRow[] = data.map((r: Record<string, unknown>) => ({
+          live_rank: Number(r.position ?? 0),
+          driver_number: Number(r.driver_number),
+          full_name: String(r.full_name ?? ""),
+          team_name: String(r.team_name ?? ""),
+          team_colour: String(r.team_colour ?? "888888").replace(/^#/, ""),
+          gap_to_leader: null,
+          gap_to_car_ahead: null,
+          compound: undefined,
+          last_lap: r.lap_duration != null ? Number(r.lap_duration) : null,
+          status: null,
+          position_change: 0,
+          code: r.name_acronym != null ? String(r.name_acronym) : undefined,
+        }));
+        setApiBoard(rows);
+      } catch {
+        if (!cancelled) setApiBoard(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionKey]);
+
+  const simBoard = useMemo(
     () => Get_Live_Leaderboard(sessionKey, elapsed),
     [sessionKey, elapsed],
   );
+  const board = apiBoard ?? simBoard;
+
   const drivers = useMemo(() => Get_Driver_List(sessionKey), [sessionKey]);
   const driver = drivers.find((d) => d.driver_number === selected) ?? drivers[0];
   const row = board.find((r) => r.driver_number === selected) ?? board[0];
@@ -117,16 +161,15 @@ export function PitwallShell() {
               rows={board}
               selected={selected}
               onSelect={pick}
-              mode={replay ? "live" : "result"}
+              mode={apiBoard ? "result" : replay ? "live" : "result"}
             />
             <aside className="panel hidden min-h-0 w-96 shrink-0 flex-col overflow-hidden lg:flex">
               {side}
             </aside>
           </div>
-          {replay && <PlaybackBar />}
+          {replay && !apiBoard && <PlaybackBar />}
         </>
       )}
-
       <Sheet open={mobileOpen} onOpenChange={setMobileOpen}>
         <SheetContent side="bottom" className="sheet-mobile">
           <SheetHeader>
@@ -161,7 +204,7 @@ function SidePanel({
   pits: ReturnType<typeof Get_Pit_Stops>;
   control: ReturnType<typeof Get_Race_Control_Until>;
   live: boolean;
-  board: ReturnType<typeof Get_Live_Leaderboard>;
+  board: LeaderboardRow[];
   sessionKey: number;
   elapsed: number;
 }) {
