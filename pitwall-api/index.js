@@ -72,36 +72,52 @@ app.get("/api/laps", async (req, res) => {
   }
 });
 
+// Danh sách session đã có data (cho Archive)
 app.get("/api/sessions", async (req, res) => {
   const year = Number(req.query.year || 2024);
   try {
     const [rows] = await pool.query(
-      `SELECT
-         s.session_key,
-         s.session_name,
-         s.session_type,
-         s.date_start,
-         s.meeting_key,
-         m.meeting_name,
-         m.circuit_short_name,
-         m.country_name,
-         m.year
-       FROM sessions s
-       LEFT JOIN meetings m ON m.meeting_key = s.meeting_key
-       WHERE m.year = ? OR s.session_key IN (
-         SELECT session_key FROM laps GROUP BY session_key
-       )
-       ORDER BY s.date_start IS NULL, s.date_start, s.session_key`,
-      [year],
+      `
+      SELECT
+        s.session_key,
+        s.session_name,
+        s.session_type,
+        s.date_start,
+        s.meeting_key,
+        m.meeting_name,
+        m.circuit_short_name,
+        m.country_name,
+        m.year
+      FROM sessions s
+      INNER JOIN (
+        SELECT DISTINCT session_key FROM laps
+      ) x ON x.session_key = s.session_key
+      LEFT JOIN meetings m ON m.meeting_key = s.meeting_key
+      WHERE (? IS NULL OR m.year = ? OR m.year IS NULL)
+      ORDER BY s.date_start IS NULL, s.date_start, s.session_key
+      `,
+      [year || null, year || null],
     );
-    // Lọc năm nếu meeting null: vẫn trả session có lap
-    const filtered = year
-      ? rows.filter((r) => r.year == null || Number(r.year) === year)
-      : rows;
-    res.json(filtered.length ? filtered : rows);
+
+    if (rows.length > 0) {
+      return res.json(rows);
+    }
+
+    // Fallback: chỉ có laps, chưa join được meetings
+    const [keys] = await pool.query(
+      `SELECT DISTINCT session_key FROM laps ORDER BY session_key`,
+    );
+    res.json(keys);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    try {
+      const [keys] = await pool.query(
+        `SELECT DISTINCT session_key FROM laps ORDER BY session_key`,
+      );
+      res.json(keys);
+    } catch (err2) {
+      res.status(500).json({ error: err2.message });
+    }
   }
 });
 
@@ -123,7 +139,6 @@ app.get("/api/pump", async (req, res) => {
       return r.json();
     };
 
-    // 1) Session metadata từ OpenF1 → seasons / meetings / sessions
     const sessions = await get(
       `https://api.openf1.org/v1/sessions?session_key=${SESSION_KEY}`,
     );
@@ -165,7 +180,6 @@ app.get("/api/pump", async (req, res) => {
       );
     }
 
-    // 2) Drivers
     const drivers = await get(
       `https://api.openf1.org/v1/drivers?session_key=${SESSION_KEY}`,
     );
@@ -194,7 +208,6 @@ app.get("/api/pump", async (req, res) => {
       driverCount++;
     }
 
-    // 3) Laps
     const laps = await get(
       `https://api.openf1.org/v1/laps?session_key=${SESSION_KEY}`,
     );
