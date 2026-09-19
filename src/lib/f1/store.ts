@@ -19,13 +19,15 @@ type PitwallState = {
 
 export const usePitwall = create<PitwallState>((set) => ({
   view: "timing",
-  year: 2026,
-  sessionKey: SESSION_KEY,
+  year: 2024,
+  // Bahrain 2024 — đã pump OpenF1 vào Aiven
+  sessionKey: 9472,
   standingsTab: "calendar",
   setView: (view) => set({ view }),
   setYear: (year) => set({ year, standingsTab: "calendar" }),
   setSessionKey: (sessionKey) => set({ sessionKey, view: "timing" }),
   setStandingsTab: (standingsTab) => set({ standingsTab }),
-  goLive: () => set({ view: "timing", sessionKey: SESSION_KEY }),
+  // Nút Live: vào session Aiven (9472), không quay simulate cũ
+  goLive: () => set({ view: "timing", sessionKey: 9472 }),
   openArchive: () => set({ view: "standings", standingsTab: "calendar" }),
 }));
