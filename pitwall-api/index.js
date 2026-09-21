@@ -72,6 +72,34 @@ app.get("/api/laps", async (req, res) => {
   }
 });
 
+// Toàn bộ lap 1 session — cho archive replay theo lap
+app.get("/api/session-laps", async (req, res) => {
+  const sessionKey = Number(req.query.session_key);
+  if (!sessionKey) {
+    return res.status(400).json({ error: "missing session_key" });
+  }
+  try {
+    const [rows] = await pool.query(
+      `SELECT
+         driver_number,
+         lap_number,
+         lap_duration,
+         duration_sector_1,
+         duration_sector_2,
+         duration_sector_3
+       FROM laps
+       WHERE session_key = ?
+         AND lap_duration IS NOT NULL
+       ORDER BY lap_number, driver_number`,
+      [sessionKey],
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Danh sách session đã có data (cho Archive)
 app.get("/api/sessions", async (req, res) => {
   const year = Number(req.query.year || 2024);
