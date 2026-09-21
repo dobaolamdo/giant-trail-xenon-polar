@@ -48,10 +48,19 @@ type DriverMeta = {
   code?: string;
 };
 
+/** Điểm F1 race (không sprint, không fastest lap bonus) */
+const F1_POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+
+function pointsForRank(rank: number): number {
+  if (rank < 1 || rank > F1_POINTS.length) return 0;
+  return F1_POINTS[rank - 1]!;
+}
+
 function boardAtLap(
   laps: RawLap[],
   meta: Map<number, DriverMeta>,
   upToLap: number,
+  withPoints: boolean,
 ): LeaderboardRow[] {
   const cum = new Map<number, number>();
   const last = new Map<number, number>();
@@ -68,8 +77,9 @@ function boardAtLap(
   return ordered.map(([num, total], i) => {
     const m = meta.get(num);
     const prev = i === 0 ? null : ordered[i - 1]![1];
+    const rank = i + 1;
     return {
-      live_rank: i + 1,
+      live_rank: rank,
       driver_number: num,
       full_name: m?.full_name ?? `#${num}`,
       team_name: m?.team_name ?? "",
@@ -80,8 +90,63 @@ function boardAtLap(
       status: null,
       position_change: 0,
       code: m?.code,
+      points: withPoints ? pointsForRank(rank) : undefined,
     };
   });
+}
+
+function mapApiLeaderboard(
+  data: Record<string, unknown>[],
+  withPoints: boolean,
+): LeaderboardRow[] {
+  const rows = data
+    .map((r) => {
+      const rank = Number(r.position ?? 0);
+      return {
+        live_rank: rank,
+        driver_number: Number(r.driver_number),
+        full_name: String(r.full_name ?? ""),
+        team_name: String(r.team_name ?? ""),
+        team_colour: String(r.team_colour ?? "888888").replace(/^#/, ""),
+        gap_to_leader: null as number | null,
+        gap_to_car_ahead: null as number | null,
+        last_lap: r.lap_duration != null ? Number(r.lap_duration) : null,
+        status: null as LeaderboardRow["status"],
+        position_change: 0,
+        code: r.name_acronym != null ? String(r.name_acronym) : undefined,
+        points: withPoints ? pointsForRank(rank) : undefined,
+      };
+    })
+    .filter((r) => r.driver_number > 0)
+    .sort((a, b) => a.live_rank - b.live_rank);
+
+  // Gap từ total_time nếu API có
+  const withTime = data
+    .map((r) => ({
+      num: Number(r.driver_number),
+      t: r.total_time != null ? Number(r.total_time) : null,
+      pos: Number(r.position ?? 0),
+    }))
+    .filter((x) => x.t != null && Number.isFinite(x.t!))
+    .sort((a, b) => a.pos - b.pos);
+
+  if (withTime.length > 0) {
+    const leaderT = withTime[0]!.t!;
+    const byNum = new Map(withTime.map((x) => [x.num, x.t!]));
+    for (let i = 0; i < rows.length; i++) {
+      const row = rows[i]!;
+      const t = byNum.get(row.driver_number);
+      if (t == null) continue;
+      row.gap_to_leader = row.live_rank === 1 ? null : t - leaderT;
+      if (i > 0) {
+        const prevNum = rows[i - 1]!.driver_number;
+        const pt = byNum.get(prevNum);
+        if (pt != null) row.gap_to_car_ahead = t - pt;
+      }
+    }
+  }
+
+  return rows;
 }
 
 export function PitwallShell() {
@@ -99,6 +164,7 @@ export function PitwallShell() {
   const isOpenF1 = sessionKey >= 9000;
   const [meta, setMeta] = useState<Map<number, DriverMeta>>(new Map());
   const [rawLaps, setRawLaps] = useState<RawLap[]>([]);
+  const [finishBoard, setFinishBoard] = useState<LeaderboardRow[] | null>(null);
   const [maxLap, setMaxLap] = useState(0);
   const [currentLap, setCurrentLap] = useState(1);
   const [lapsLoading, setLapsLoading] = useState(false);
@@ -120,6 +186,7 @@ export function PitwallShell() {
     if (!isOpenF1) {
       setRawLaps([]);
       setMeta(new Map());
+      setFinishBoard(null);
       setMaxLap(0);
       return;
     }
@@ -148,6 +215,9 @@ export function PitwallShell() {
                 r.name_acronym != null ? String(r.name_acronym) : undefined,
             });
           }
+          setFinishBoard(mapApiLeaderboard(boardData, true));
+        } else {
+          setFinishBoard(null);
         }
         setMeta(m);
 
@@ -168,6 +238,7 @@ export function PitwallShell() {
         if (!cancelled) {
           setRawLaps([]);
           setMeta(new Map());
+          setFinishBoard(null);
           setMaxLap(0);
         }
       } finally {
@@ -180,15 +251,22 @@ export function PitwallShell() {
   }, [sessionKey, isOpenF1, selectDriver]);
 
   const apiBoard = useMemo(() => {
-    if (!isOpenF1 || rawLaps.length === 0) return null;
-    return boardAtLap(rawLaps, meta, currentLap);
-  }, [isOpenF1, rawLaps, meta, currentLap]);
+    if (!isOpenF1) return null;
+    // Cuối chặng: đúng procedure API (không SUM lap)
+    if (maxLap > 0 && currentLap >= maxLap && finishBoard?.length) {
+      return finishBoard;
+    }
+    if (rawLaps.length === 0) return finishBoard;
+    // Giữa race: ước lượng theo cộng lap (approx)
+    return boardAtLap(rawLaps, meta, currentLap, false);
+  }, [isOpenF1, maxLap, currentLap, finishBoard, rawLaps, meta]);
 
   const simBoard = useMemo(
     () => Get_Live_Leaderboard(sessionKey, elapsed),
     [sessionKey, elapsed],
   );
   const board = apiBoard ?? simBoard;
+  const atFinish = isOpenF1 && maxLap > 0 && currentLap >= maxLap;
 
   const drivers = useMemo(() => Get_Driver_List(sessionKey), [sessionKey]);
   const driver =
@@ -251,7 +329,7 @@ export function PitwallShell() {
               rows={board}
               selected={selected}
               onSelect={pick}
-              mode={apiBoard ? "live" : replay ? "live" : "result"}
+              mode={atFinish ? "result" : apiBoard ? "live" : replay ? "live" : "result"}
             />
             <aside className="panel hidden min-h-0 w-96 shrink-0 flex-col overflow-hidden lg:flex">
               {side}
@@ -263,7 +341,9 @@ export function PitwallShell() {
               <span className="text-xs tracking-widest text-muted uppercase">
                 {lapsLoading
                   ? "Loading laps…"
-                  : `Lap ${currentLap} / ${maxLap}`}
+                  : atFinish
+                    ? `Finish · Lap ${maxLap} (procedure)`
+                    : `Lap ${currentLap} / ${maxLap} (approx)`}
               </span>
               <input
                 type="range"
