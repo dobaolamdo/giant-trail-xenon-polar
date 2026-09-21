@@ -35,6 +35,55 @@ import { TracePanel } from "./trace-panel";
 
 type SideTab = "driver" | "control" | "pits" | "trace";
 
+type RawLap = {
+  driver_number: number;
+  lap_number: number;
+  lap_duration: number | string | null;
+};
+
+type DriverMeta = {
+  full_name: string;
+  team_name: string;
+  team_colour: string;
+  code?: string;
+};
+
+function boardAtLap(
+  laps: RawLap[],
+  meta: Map<number, DriverMeta>,
+  upToLap: number,
+): LeaderboardRow[] {
+  const cum = new Map<number, number>();
+  const last = new Map<number, number>();
+  for (const l of laps) {
+    if (l.lap_number > upToLap) continue;
+    const d = Number(l.lap_duration);
+    if (!Number.isFinite(d) || d <= 0) continue;
+    const n = Number(l.driver_number);
+    cum.set(n, (cum.get(n) ?? 0) + d);
+    if (l.lap_number === upToLap) last.set(n, d);
+  }
+  const ordered = [...cum.entries()].sort((a, b) => a[1] - b[1]);
+  const leaderT = ordered[0]?.[1] ?? 0;
+  return ordered.map(([num, total], i) => {
+    const m = meta.get(num);
+    const prev = i === 0 ? null : ordered[i - 1]![1];
+    return {
+      live_rank: i + 1,
+      driver_number: num,
+      full_name: m?.full_name ?? `#${num}`,
+      team_name: m?.team_name ?? "",
+      team_colour: (m?.team_colour ?? "888888").replace(/^#/, ""),
+      gap_to_leader: i === 0 ? null : total - leaderT,
+      gap_to_car_ahead: prev == null ? null : total - prev,
+      last_lap: last.get(num) ?? null,
+      status: null,
+      position_change: 0,
+      code: m?.code,
+    };
+  });
+}
+
 export function PitwallShell() {
   const elapsed = useRaceClock((s) => s.elapsed);
   const selected = useRaceClock((s) => s.selectedDriver);
@@ -46,7 +95,13 @@ export function PitwallShell() {
   const replay = hasTimingFeed(sessionKey);
   const [tab, setTab] = useState<SideTab>("driver");
   const [mobileOpen, setMobileOpen] = useState(false);
-  const [apiBoard, setApiBoard] = useState<LeaderboardRow[] | null>(null);
+
+  const isOpenF1 = sessionKey >= 9000;
+  const [meta, setMeta] = useState<Map<number, DriverMeta>>(new Map());
+  const [rawLaps, setRawLaps] = useState<RawLap[]>([]);
+  const [maxLap, setMaxLap] = useState(0);
+  const [currentLap, setCurrentLap] = useState(1);
+  const [lapsLoading, setLapsLoading] = useState(false);
 
   useKeyboardPlayback();
 
@@ -61,45 +116,73 @@ export function PitwallShell() {
     bindSession(feed.duration, start, driver);
   }, [sessionKey, live, bindSession]);
 
-  // Mọi session OpenF1 đã pump (key >= 9000), không chỉ 9472
   useEffect(() => {
-    if (sessionKey < 9000) {
-      setApiBoard(null);
+    if (!isOpenF1) {
+      setRawLaps([]);
+      setMeta(new Map());
+      setMaxLap(0);
       return;
     }
     const base =
       import.meta.env.VITE_API_URL || "https://f1-dashboard-sbrl.onrender.com";
     let cancelled = false;
+    setLapsLoading(true);
     (async () => {
       try {
-        const res = await fetch(
-          `${base}/api/leaderboard?session_key=${sessionKey}`,
-        );
-        const data = await res.json();
-        if (cancelled || !Array.isArray(data)) return;
-        const rows: LeaderboardRow[] = data.map((r: Record<string, unknown>) => ({
-          live_rank: Number(r.position ?? 0),
-          driver_number: Number(r.driver_number),
-          full_name: String(r.full_name ?? ""),
-          team_name: String(r.team_name ?? ""),
-          team_colour: String(r.team_colour ?? "888888").replace(/^#/, ""),
-          gap_to_leader: null,
-          gap_to_car_ahead: null,
-          compound: undefined,
-          last_lap: r.lap_duration != null ? Number(r.lap_duration) : null,
-          status: null,
-          position_change: 0,
-          code: r.name_acronym != null ? String(r.name_acronym) : undefined,
-        }));
-        setApiBoard(rows);
+        const [boardRes, lapsRes] = await Promise.all([
+          fetch(`${base}/api/leaderboard?session_key=${sessionKey}`),
+          fetch(`${base}/api/session-laps?session_key=${sessionKey}`),
+        ]);
+        const boardData = await boardRes.json();
+        const lapsData = await lapsRes.json();
+        if (cancelled) return;
+
+        const m = new Map<number, DriverMeta>();
+        if (Array.isArray(boardData)) {
+          for (const r of boardData) {
+            m.set(Number(r.driver_number), {
+              full_name: String(r.full_name ?? ""),
+              team_name: String(r.team_name ?? ""),
+              team_colour: String(r.team_colour ?? "888888"),
+              code:
+                r.name_acronym != null ? String(r.name_acronym) : undefined,
+            });
+          }
+        }
+        setMeta(m);
+
+        const laps: RawLap[] = Array.isArray(lapsData)
+          ? lapsData.map((r: Record<string, unknown>) => ({
+              driver_number: Number(r.driver_number),
+              lap_number: Number(r.lap_number),
+              lap_duration: r.lap_duration as number | string | null,
+            }))
+          : [];
+        setRawLaps(laps);
+        const mx = laps.reduce((a, l) => Math.max(a, l.lap_number), 0);
+        setMaxLap(mx);
+        setCurrentLap(mx > 0 ? mx : 1);
+        const first = [...m.keys()][0];
+        if (first != null) selectDriver(first);
       } catch {
-        if (!cancelled) setApiBoard(null);
+        if (!cancelled) {
+          setRawLaps([]);
+          setMeta(new Map());
+          setMaxLap(0);
+        }
+      } finally {
+        if (!cancelled) setLapsLoading(false);
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [sessionKey]);
+  }, [sessionKey, isOpenF1, selectDriver]);
+
+  const apiBoard = useMemo(() => {
+    if (!isOpenF1 || rawLaps.length === 0) return null;
+    return boardAtLap(rawLaps, meta, currentLap);
+  }, [isOpenF1, rawLaps, meta, currentLap]);
 
   const simBoard = useMemo(
     () => Get_Live_Leaderboard(sessionKey, elapsed),
@@ -108,13 +191,17 @@ export function PitwallShell() {
   const board = apiBoard ?? simBoard;
 
   const drivers = useMemo(() => Get_Driver_List(sessionKey), [sessionKey]);
-  const driver = drivers.find((d) => d.driver_number === selected) ?? drivers[0];
+  const driver =
+    drivers.find((d) => d.driver_number === selected) ?? drivers[0];
   const row = board.find((r) => r.driver_number === selected) ?? board[0];
   const laps = useMemo(
     () => Get_Driver_Lap_History(sessionKey, selected, elapsed),
     [sessionKey, selected, elapsed],
   );
-  const pits = useMemo(() => Get_Pit_Stops(sessionKey, elapsed), [sessionKey, elapsed]);
+  const pits = useMemo(
+    () => Get_Pit_Stops(sessionKey, elapsed),
+    [sessionKey, elapsed],
+  );
   const control = useMemo(
     () => Get_Race_Control_Until(sessionKey, elapsed),
     [sessionKey, elapsed],
@@ -164,12 +251,54 @@ export function PitwallShell() {
               rows={board}
               selected={selected}
               onSelect={pick}
-              mode={apiBoard ? "result" : replay ? "live" : "result"}
+              mode={apiBoard ? "live" : replay ? "live" : "result"}
             />
             <aside className="panel hidden min-h-0 w-96 shrink-0 flex-col overflow-hidden lg:flex">
               {side}
             </aside>
           </div>
+
+          {isOpenF1 && maxLap > 0 && (
+            <div className="flex flex-wrap items-center gap-3 border-t border-border px-3 py-2 sm:px-4">
+              <span className="text-xs tracking-widest text-muted uppercase">
+                {lapsLoading
+                  ? "Loading laps…"
+                  : `Lap ${currentLap} / ${maxLap}`}
+              </span>
+              <input
+                type="range"
+                min={1}
+                max={maxLap}
+                value={currentLap}
+                onChange={(e) => setCurrentLap(Number(e.target.value))}
+                className="min-w-[12rem] flex-1"
+              />
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={currentLap <= 1}
+                onClick={() => setCurrentLap((l) => Math.max(1, l - 1))}
+              >
+                − Lap
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                disabled={currentLap >= maxLap}
+                onClick={() => setCurrentLap((l) => Math.min(maxLap, l + 1))}
+              >
+                + Lap
+              </Button>
+              <Button
+                size="sm"
+                variant="default"
+                onClick={() => setCurrentLap(maxLap)}
+              >
+                Finish
+              </Button>
+            </div>
+          )}
+
           {replay && !apiBoard && <PlaybackBar />}
         </>
       )}
