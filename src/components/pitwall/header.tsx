@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   Cloud,
   Database,
@@ -25,6 +26,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
+type OpenMeta = {
+  meeting_name: string;
+  circuit_short_name: string;
+  country_name?: string;
+  year?: number;
+};
+
 export function TimingHeader() {
   const elapsed = useRaceClock((s) => s.elapsed);
   const playing = useRaceClock((s) => s.playing);
@@ -38,10 +46,59 @@ export function TimingHeader() {
   const live = isLiveSession(sessionKey);
   const replay = !live && hasTimingFeed(sessionKey);
   const feed = getFeed(sessionKey);
-  const weather = (live || replay) ? Get_Session_Weather(sessionKey, elapsed) : null;
-  const lap = (live || replay) ? currentLapNumber(sessionKey, elapsed) : null;
+  const weather = live || replay ? Get_Session_Weather(sessionKey, elapsed) : null;
+  const lap = live || replay ? currentLapNumber(sessionKey, elapsed) : null;
   const finished = (live || replay) && isRaceFinished(sessionKey, elapsed);
   const totalLaps = feed?.totalLaps ?? 0;
+
+  const isOpenF1 = sessionKey >= 9000;
+  const [openMeta, setOpenMeta] = useState<OpenMeta | null>(null);
+
+  useEffect(() => {
+    if (!isOpenF1) {
+      setOpenMeta(null);
+      return;
+    }
+    const base =
+      import.meta.env.VITE_API_URL || "https://f1-dashboard-sbrl.onrender.com";
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`${base}/api/sessions?year=2024`);
+        const data = await res.json();
+        if (cancelled || !Array.isArray(data)) return;
+        const hit = data.find(
+          (r: { session_key: number }) => Number(r.session_key) === sessionKey,
+        );
+        if (hit) {
+          setOpenMeta({
+            meeting_name: String(
+              hit.meeting_name || hit.circuit_short_name || `Session ${sessionKey}`,
+            ),
+            circuit_short_name: String(hit.circuit_short_name || ""),
+            country_name: hit.country_name ? String(hit.country_name) : undefined,
+            year: hit.year != null ? Number(hit.year) : 2024,
+          });
+        }
+      } catch {
+        if (!cancelled) setOpenMeta(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionKey, isOpenF1]);
+
+  const titleLine =
+    view === "standings"
+      ? "Archive · OpenF1 + MySQL"
+      : view === "schema"
+        ? "MySQL · Trigger · Procedure"
+        : isOpenF1 && openMeta
+          ? `${openMeta.meeting_name} · ${openMeta.circuit_short_name}`
+          : live
+            ? `Live · ${session?.meeting_name ?? "—"} · ${session?.circuit_short_name ?? "—"}`
+            : `Replay · ${session?.meeting_name ?? "—"} · ${session?.circuit_short_name ?? "—"}`;
 
   return (
     <header className="flex flex-col gap-3 px-3 pt-3 pb-2 sm:px-4">
@@ -54,13 +111,7 @@ export function TimingHeader() {
             </h1>
           </div>
           <p className="mt-1 truncate pl-3 text-sm tracking-wider text-muted uppercase">
-            {view === "standings"
-              ? "Archive · 2023–2026"
-              : view === "schema"
-                ? "MySQL contract"
-                : live
-                  ? `Live · ${session?.meeting_name} · ${session?.circuit_short_name}`
-                  : `Replay · ${session?.meeting_name} · ${session?.circuit_short_name}`}
+            {titleLine}
           </p>
         </div>
 
@@ -78,7 +129,11 @@ export function TimingHeader() {
             </Button>
             <Button
               size="sm"
-              variant={view === "standings" || (view === "timing" && !live) ? "secondary" : "ghost"}
+              variant={
+                view === "standings" || (view === "timing" && !live)
+                  ? "secondary"
+                  : "ghost"
+              }
               onClick={() => openArchive()}
               className="gap-1.5"
               aria-label="Archive"
@@ -109,20 +164,26 @@ export function TimingHeader() {
                     (live || replay) && playing && !finished && "live-dot",
                   )}
                 />
-                {live
-                  ? finished
-                    ? "Finish"
-                    : playing
-                      ? "Live"
-                      : "Paused"
-                  : finished
-                    ? "Result"
-                    : playing
-                      ? "Replay"
-                      : "Paused"}
+                {isOpenF1
+                  ? "OpenF1 · DB"
+                  : live
+                    ? finished
+                      ? "Finish"
+                      : playing
+                        ? "Live"
+                        : "Paused"
+                    : finished
+                      ? "Result"
+                      : playing
+                        ? "Replay"
+                        : "Paused"}
               </Badge>
               <span className="rounded-md bg-surface-2 px-2 py-1 font-mono text-xs tracking-wide text-fg tabular">
-                {meeting ? `${meeting.year} · R${meeting.round}` : session?.session_name}
+                {isOpenF1
+                  ? `key ${sessionKey}`
+                  : meeting
+                    ? `${meeting.year} · R${meeting.round}`
+                    : session?.session_name}
               </span>
             </div>
           )}
