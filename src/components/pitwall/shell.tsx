@@ -388,7 +388,7 @@ export function PitwallShell() {
     }
   }
 
-  const side = (
+    const side = (
     <SidePanel
       tab={tab}
       onTab={setTab}
@@ -398,9 +398,11 @@ export function PitwallShell() {
       pits={pits}
       control={control}
       live={replay}
+      showSql={isOpenF1}
       board={board}
       sessionKey={sessionKey}
       elapsed={elapsed}
+      selectedDriver={activeNumber}
     />
   );
 
@@ -526,9 +528,11 @@ function SidePanel({
   pits,
   control,
   live,
+  showSql = false,
   board,
   sessionKey,
   elapsed,
+  selectedDriver,
 }: {
   tab: SideTab;
   onTab: (t: SideTab) => void;
@@ -538,10 +542,13 @@ function SidePanel({
   pits: ReturnType<typeof Get_Pit_Stops>;
   control: ReturnType<typeof Get_Race_Control_Until>;
   live: boolean;
+  showSql?: boolean;
   board: LeaderboardRow[];
   sessionKey: number;
   elapsed: number;
+  selectedDriver?: number;
 }) {
+  const drv = selectedDriver ?? board[0]?.driver_number ?? 0;
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex gap-1 p-2">
@@ -558,9 +565,9 @@ function SidePanel({
             Pits
           </TabBtn>
         )}
-        {live && (
+        {(live || showSql) && (
           <TabBtn active={tab === "trace"} onClick={() => onTab("trace")}>
-            Trace
+            SQL
           </TabBtn>
         )}
       </div>
@@ -578,8 +585,56 @@ function SidePanel({
             <PitStopTable stops={pits} />
           </div>
         )}
-        {live && tab === "trace" && (
-          <TracePanel sessionKey={sessionKey} elapsed={elapsed} board={board} />
+        {(live || showSql) && tab === "trace" && (
+          <div className="h-full space-y-3 overflow-y-auto p-3 font-mono text-xs">
+            <div className="rounded-md bg-surface-2 p-3">
+              <p className="mb-2 tracking-widest text-subtle uppercase">
+                1. Pump OpenF1 → MySQL
+              </p>
+              <pre className="whitespace-pre-wrap text-fg">{`INSERT INTO laps (
+  session_key, driver_number, lap_number,
+  lap_duration, duration_sector_1, duration_sector_2, duration_sector_3
+) VALUES (?, ?, ?, ?, ?, ?, ?)
+ON DUPLICATE KEY UPDATE
+  lap_duration = VALUES(lap_duration),
+  duration_sector_1 = VALUES(duration_sector_1),
+  duration_sector_2 = VALUES(duration_sector_2),
+  duration_sector_3 = VALUES(duration_sector_3);`}</pre>
+            </div>
+            <div className="rounded-md bg-surface-2 p-3">
+              <p className="mb-2 tracking-widest text-subtle uppercase">
+                2. Procedure (API đang gọi)
+              </p>
+              <pre className="whitespace-pre-wrap text-fg">{`CALL Get_Live_Leaderboard(${sessionKey});
+CALL Get_Driver_Lap_History(${sessionKey}, ${drv});
+-- JSON → leaderboard + driver panel`}</pre>
+            </div>
+            <div className="rounded-md bg-surface-2 p-3">
+              <p className="mb-2 tracking-widest text-subtle uppercase">
+                3. Trigger (demo DBeaver)
+              </p>
+              <pre className="whitespace-pre-wrap text-fg">{`INSERT INTO laps (...) VALUES (...);
+-- AFTER INSERT: cập nhật purple / session_best
+-- Không cần UPDATE tay`}</pre>
+            </div>
+            <div className="rounded-md bg-surface-2 p-3">
+              <p className="mb-2 tracking-widest text-subtle uppercase">
+                4. Derived trên UI
+              </p>
+              <pre className="whitespace-pre-wrap text-fg">{`session_key = ${sessionKey}
+drivers on board = ${board.length}
+mid-race: RANK by SUM(lap_duration) approx
+Finish: procedure + Pts 25/18/15...
+selected driver = ${drv}`}</pre>
+            </div>
+            {live && (
+              <TracePanel
+                sessionKey={sessionKey}
+                elapsed={elapsed}
+                board={board}
+              />
+            )}
+          </div>
         )}
       </div>
     </div>
