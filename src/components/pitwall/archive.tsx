@@ -53,14 +53,21 @@ export function ArchiveView() {
         setApiSessions(
           data.map((r: Record<string, unknown>) => ({
             session_key: Number(r.session_key),
-            session_name: r.session_name != null ? String(r.session_name) : undefined,
-            session_type: r.session_type != null ? String(r.session_type) : undefined,
+            session_name:
+              r.session_name != null ? String(r.session_name) : undefined,
+            session_type:
+              r.session_type != null ? String(r.session_type) : undefined,
             date_start: r.date_start != null ? String(r.date_start) : null,
-            meeting_key: r.meeting_key != null ? Number(r.meeting_key) : undefined,
-            meeting_name: r.meeting_name != null ? String(r.meeting_name) : null,
+            meeting_key:
+              r.meeting_key != null ? Number(r.meeting_key) : undefined,
+            meeting_name:
+              r.meeting_name != null ? String(r.meeting_name) : null,
             circuit_short_name:
-              r.circuit_short_name != null ? String(r.circuit_short_name) : null,
-            country_name: r.country_name != null ? String(r.country_name) : null,
+              r.circuit_short_name != null
+                ? String(r.circuit_short_name)
+                : null,
+            country_name:
+              r.country_name != null ? String(r.country_name) : null,
             year: r.year != null ? Number(r.year) : null,
           })),
         );
@@ -106,12 +113,15 @@ export function ArchiveView() {
         </span>
       </div>
 
-      {leader && (
+      {/* Banner điểm mùa local — ẨN khi đang dùng calendar OpenF1/DB */}
+      {leader && !useApiCalendar && (
         <div className="panel flex items-center gap-3 px-3 py-3">
           <Trophy className="size-5 shrink-0 text-accent" aria-hidden />
           <div className="min-w-0">
             <p className="text-xs tracking-widest text-muted uppercase">
-              {year === 2026 ? `${year} Drivers leader` : `${year} Drivers champion`}
+              {year === 2026
+                ? `${year} Drivers leader`
+                : `${year} Drivers champion`}
             </p>
             <p className="truncate text-xl font-extrabold tracking-wide uppercase">
               {splitName(leader.full_name).last}
@@ -132,6 +142,13 @@ export function ArchiveView() {
         </div>
       )}
 
+      {useApiCalendar && (
+        <p className="px-1 text-xs tracking-wide text-subtle">
+          Calendar từ MySQL (OpenF1 pump). Pts từng race hiện khi Watch → End
+          (25-18-15…). Standings mùa local đã tắt để tránh số sai.
+        </p>
+      )}
+
       <div className="flex gap-1">
         <TabBtn active={tab === "calendar"} onClick={() => setTab("calendar")}>
           Calendar
@@ -139,7 +156,10 @@ export function ArchiveView() {
         <TabBtn active={tab === "drivers"} onClick={() => setTab("drivers")}>
           Drivers
         </TabBtn>
-        <TabBtn active={tab === "constructors"} onClick={() => setTab("constructors")}>
+        <TabBtn
+          active={tab === "constructors"}
+          onClick={() => setTab("constructors")}
+        >
           Teams
         </TabBtn>
       </div>
@@ -165,7 +185,9 @@ export function ArchiveView() {
                       <span className="block truncate text-xs text-subtle">
                         {(m.circuit_short_name || m.country_name || "—") +
                           " · " +
-                          (m.date_start ? String(m.date_start).slice(0, 10) : "—") +
+                          (m.date_start
+                            ? String(m.date_start).slice(0, 10)
+                            : "—") +
                           " · key " +
                           m.session_key}
                       </span>
@@ -191,7 +213,9 @@ export function ArchiveView() {
         {tab === "calendar" && !useApiCalendar && (
           <>
             {apiLoading && (
-              <p className="px-3 py-4 text-sm text-muted">Loading sessions from API…</p>
+              <p className="px-3 py-4 text-sm text-muted">
+                Loading sessions from API…
+              </p>
             )}
             <ol className="divide-y divide-border">
               {meetings.map((m) => {
@@ -244,7 +268,9 @@ export function ArchiveView() {
               <tr className="text-xs tracking-widest text-subtle uppercase">
                 <th className="px-3 py-2 font-medium">P</th>
                 <th className="px-1 py-2 font-medium">Driver</th>
-                <th className="hidden px-1 py-2 font-medium sm:table-cell">Team</th>
+                <th className="hidden px-1 py-2 font-medium sm:table-cell">
+                  Team
+                </th>
                 <th className="px-2 py-2 font-medium text-right">Wins</th>
                 <th className="px-3 py-2 font-medium text-right">Pts</th>
               </tr>
@@ -327,7 +353,7 @@ export function ArchiveView() {
       </div>
 
       <p className="px-1 text-xs tracking-wide text-subtle">
-        2024 sessions from Aiven (/api/sessions) · Watch → Get_Live_Leaderboard
+        Watch → OpenF1 data in Aiven · CALL Get_Live_Leaderboard
       </p>
     </div>
   );
