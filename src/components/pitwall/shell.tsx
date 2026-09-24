@@ -59,6 +59,7 @@ type DriverMeta = {
 };
 
 const F1_POINTS = [25, 18, 15, 12, 10, 8, 6, 4, 2, 1];
+const PLAY_SPEEDS = [0.5, 1, 2, 4] as const;
 
 function pointsForRank(rank: number): number {
   if (rank < 1 || rank > F1_POINTS.length) return 0;
@@ -155,7 +156,6 @@ function mapApiLeaderboard(
   return rows;
 }
 
-/** Lọc session-laps theo 1 xe → bảng sector */
 function lapsForDriver(
   all: RawLap[],
   driverNumber: number,
@@ -197,6 +197,20 @@ function lapsForDriver(
   });
 }
 
+function fmtSec(v: number | string | null | undefined): string {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  return n.toFixed(3);
+}
+
+function fmtLap(v: number | string | null | undefined): string {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return "—";
+  const m = Math.floor(n / 60);
+  const s = n - m * 60;
+  return `${m}:${s.toFixed(3).padStart(6, "0")}`;
+}
+
 export function PitwallShell() {
   const elapsed = useRaceClock((s) => s.elapsed);
   const selected = useRaceClock((s) => s.selectedDriver);
@@ -217,6 +231,7 @@ export function PitwallShell() {
   const [currentLap, setCurrentLap] = useState(1);
   const [lapsLoading, setLapsLoading] = useState(false);
   const [playing, setPlaying] = useState(false);
+  const [playSpeed, setPlaySpeed] = useState<number>(1);
 
   useKeyboardPlayback();
 
@@ -307,9 +322,10 @@ export function PitwallShell() {
     };
   }, [sessionKey, isOpenF1, selectDriver]);
 
-  // Auto play: +1 lap mỗi 0.8s
+  // Auto play: interval = 800ms / speed (smoother at 2x/4x)
   useEffect(() => {
     if (!playing || !isOpenF1 || maxLap < 1) return;
+    const ms = Math.max(120, Math.round(800 / playSpeed));
     const id = window.setInterval(() => {
       setCurrentLap((l) => {
         if (l >= maxLap) {
@@ -318,9 +334,9 @@ export function PitwallShell() {
         }
         return l + 1;
       });
-    }, 800);
+    }, ms);
     return () => window.clearInterval(id);
-  }, [playing, isOpenF1, maxLap]);
+  }, [playing, isOpenF1, maxLap, playSpeed]);
 
   const apiBoard = useMemo(() => {
     if (!isOpenF1) return null;
@@ -377,6 +393,25 @@ export function PitwallShell() {
     [sessionKey, elapsed],
   );
 
+  // Sample lap for OpenF1 SQL tab (prefer selected driver at currentLap)
+  const sampleLap = useMemo(() => {
+    if (!isOpenF1 || rawLaps.length === 0) return null;
+    const prefer =
+      rawLaps.find(
+        (l) =>
+          Number(l.driver_number) === activeNumber &&
+          l.lap_number === currentLap &&
+          Number(l.lap_duration) > 0,
+      ) ||
+      rawLaps.find(
+        (l) =>
+          Number(l.driver_number) === activeNumber &&
+          Number(l.lap_duration) > 0,
+      ) ||
+      rawLaps.find((l) => Number(l.lap_duration) > 0);
+    return prefer ?? null;
+  }, [isOpenF1, rawLaps, activeNumber, currentLap]);
+
   function pick(n: number) {
     selectDriver(n);
     setTab("driver");
@@ -388,7 +423,7 @@ export function PitwallShell() {
     }
   }
 
-    const side = (
+  const side = (
     <SidePanel
       tab={tab}
       onTab={setTab}
@@ -398,11 +433,15 @@ export function PitwallShell() {
       pits={pits}
       control={control}
       live={replay}
-      showSql={isOpenF1}
+      showSql
       board={board}
       sessionKey={sessionKey}
       elapsed={elapsed}
       selectedDriver={activeNumber}
+      sampleLap={sampleLap}
+      meta={meta}
+      currentLap={currentLap}
+      isOpenF1={isOpenF1}
     />
   );
 
@@ -418,7 +457,11 @@ export function PitwallShell() {
         <>
           {replay && <RaceControlTicker />}
           {replay && <PurpleAlert />}
-          <div className="flex min-h-0 flex-1 flex-col gap-3 px-3 pb-3 lg:flex-row sm:px-4">
+          <div
+            className={`flex min-h-0 flex-1 flex-col gap-3 px-3 lg:flex-row sm:px-4 ${
+              isOpenF1 && maxLap > 0 ? "pb-20" : "pb-3"
+            }`}
+          >
             <Leaderboard
               rows={board}
               selected={activeNumber}
@@ -439,7 +482,7 @@ export function PitwallShell() {
           </div>
 
           {isOpenF1 && maxLap > 0 && (
-            <div className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2 sm:gap-3 sm:px-4">
+            <div className="fixed inset-x-0 bottom-0 z-40 flex flex-wrap items-center gap-2 border-t border-border bg-surface/95 px-3 py-2 backdrop-blur-sm sm:gap-3 sm:px-4">
               <span className="text-xs tracking-widest text-muted uppercase">
                 {lapsLoading
                   ? "Loading…"
@@ -468,6 +511,19 @@ export function PitwallShell() {
               >
                 {playing ? "Pause" : "Play"}
               </Button>
+              <div className="flex gap-1">
+                {PLAY_SPEEDS.map((s) => (
+                  <Button
+                    key={s}
+                    size="sm"
+                    variant={playSpeed === s ? "default" : "ghost"}
+                    className="min-w-10 px-2"
+                    onClick={() => setPlaySpeed(s)}
+                  >
+                    {s}×
+                  </Button>
+                ))}
+              </div>
               <Button
                 size="sm"
                 variant="secondary"
@@ -533,6 +589,10 @@ function SidePanel({
   sessionKey,
   elapsed,
   selectedDriver,
+  sampleLap,
+  meta,
+  currentLap,
+  isOpenF1,
 }: {
   tab: SideTab;
   onTab: (t: SideTab) => void;
@@ -547,8 +607,22 @@ function SidePanel({
   sessionKey: number;
   elapsed: number;
   selectedDriver?: number;
+  sampleLap?: RawLap | null;
+  meta?: Map<number, DriverMeta>;
+  currentLap?: number;
+  isOpenF1?: boolean;
 }) {
   const drv = selectedDriver ?? board[0]?.driver_number ?? 0;
+  const code =
+    meta?.get(drv)?.code ||
+    board.find((r) => r.driver_number === drv)?.code ||
+    String(drv);
+  const purpleFired =
+    sampleLap &&
+    (Boolean(sampleLap.is_purple_s1) ||
+      Boolean(sampleLap.is_purple_s2) ||
+      Boolean(sampleLap.is_purple_s3));
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex gap-1 p-2">
@@ -593,7 +667,8 @@ function SidePanel({
               </p>
               <pre className="whitespace-pre-wrap text-fg">{`INSERT INTO laps (
   session_key, driver_number, lap_number,
-  lap_duration, duration_sector_1, duration_sector_2, duration_sector_3
+  lap_duration, duration_sector_1,
+  duration_sector_2, duration_sector_3
 ) VALUES (?, ?, ?, ?, ?, ?, ?)
 ON DUPLICATE KEY UPDATE
   lap_duration = VALUES(lap_duration),
@@ -601,6 +676,7 @@ ON DUPLICATE KEY UPDATE
   duration_sector_2 = VALUES(duration_sector_2),
   duration_sector_3 = VALUES(duration_sector_3);`}</pre>
             </div>
+
             <div className="rounded-md bg-surface-2 p-3">
               <p className="mb-2 tracking-widest text-subtle uppercase">
                 2. Procedure (API đang gọi)
@@ -609,24 +685,81 @@ ON DUPLICATE KEY UPDATE
 CALL Get_Driver_Lap_History(${sessionKey}, ${drv});
 -- JSON → leaderboard + driver panel`}</pre>
             </div>
+
             <div className="rounded-md bg-surface-2 p-3">
               <p className="mb-2 tracking-widest text-subtle uppercase">
                 3. Trigger (demo DBeaver)
               </p>
               <pre className="whitespace-pre-wrap text-fg">{`INSERT INTO laps (...) VALUES (...);
--- AFTER INSERT: cập nhật purple / session_best
+-- AFTER INSERT: is_purple_s* / session_best
 -- Không cần UPDATE tay`}</pre>
             </div>
+
             <div className="rounded-md bg-surface-2 p-3">
               <p className="mb-2 tracking-widest text-subtle uppercase">
                 4. Derived trên UI
               </p>
               <pre className="whitespace-pre-wrap text-fg">{`session_key = ${sessionKey}
-drivers on board = ${board.length}
-mid-race: RANK by SUM(lap_duration) approx
-Finish: procedure + Pts 25/18/15...
-selected driver = ${drv}`}</pre>
+cars on board = ${board.length}
+lap = ${currentLap ?? "—"}
+mid-race: RANK by SUM(lap_duration)
+Finish: procedure + Pts 25/18/15…`}</pre>
             </div>
+
+            {isOpenF1 && sampleLap && (
+              <>
+                <div className="rounded-md bg-surface-2 p-3">
+                  <p className="mb-1.5 tracking-widest text-subtle uppercase">
+                    Raw ingest → trigger → derived
+                  </p>
+                  <p className="mb-2 text-[10px] text-subtle">
+                    Left is what the sensor writes. Right is what the database
+                    computes.
+                  </p>
+                  <p className="mb-1 tracking-widest text-subtle uppercase">
+                    INSERT INTO laps
+                  </p>
+                  <pre className="whitespace-pre-wrap text-fg">{`driver_number: ${sampleLap.driver_number}  #${code}
+lap_number:    ${sampleLap.lap_number}
+s1:            ${fmtSec(sampleLap.duration_sector_1)}
+s2:            ${fmtSec(sampleLap.duration_sector_2)}
+s3:            ${fmtSec(sampleLap.duration_sector_3)}
+lap_duration:  ${fmtLap(sampleLap.lap_duration)}`}</pre>
+                </div>
+                <div
+                  className={`rounded-md p-3 ${
+                    purpleFired ? "bg-sector-purple/10" : "bg-surface-2"
+                  }`}
+                >
+                  <p className="mb-1.5 flex items-center gap-2 tracking-widest text-subtle uppercase">
+                    AFTER INSERT trigger
+                    {purpleFired && (
+                      <span className="rounded bg-sector-purple/30 px-1.5 py-0.5 text-[10px] font-semibold text-sector-purple">
+                        FIRED
+                      </span>
+                    )}
+                  </p>
+                  <pre className="whitespace-pre-wrap text-fg">{`AFTER INSERT ON laps FOR EACH ROW
+IF NEW.duration_s3 < (
+  SELECT MIN(duration_sector_3) FROM laps
+  WHERE session_key = NEW.session_key
+) THEN SET NEW.is_purple_s3 = 1;`}</pre>
+                  {purpleFired && (
+                    <p className="mt-2 text-sector-purple">
+                      purple flags:{" "}
+                      {[
+                        sampleLap.is_purple_s1 && "S1",
+                        sampleLap.is_purple_s2 && "S2",
+                        sampleLap.is_purple_s3 && "S3",
+                      ]
+                        .filter(Boolean)
+                        .join(" ") || "—"}
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
             {live && (
               <TracePanel
                 sessionKey={sessionKey}
