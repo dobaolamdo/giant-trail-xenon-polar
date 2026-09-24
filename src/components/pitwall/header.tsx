@@ -41,12 +41,18 @@ export function TimingHeader() {
   const goLive = usePitwall((s) => s.goLive);
   const openArchive = usePitwall((s) => s.openArchive);
   const setView = usePitwall((s) => s.setView);
+  const archiveElapsed = usePitwall((s) => s.archiveElapsed);
+  const archiveDuration = usePitwall((s) => s.archiveDuration);
+  const archiveLap = usePitwall((s) => s.archiveLap);
+  const archiveMaxLap = usePitwall((s) => s.archiveMaxLap);
+  const archiveWeather = usePitwall((s) => s.archiveWeather);
   const session = Get_Session_Info(sessionKey);
   const meeting = Get_Meeting(sessionKey);
   const live = isLiveSession(sessionKey);
   const replay = !live && hasTimingFeed(sessionKey);
   const feed = getFeed(sessionKey);
-  const weather = live || replay ? Get_Session_Weather(sessionKey, elapsed) : null;
+  const simWeather =
+    live || replay ? Get_Session_Weather(sessionKey, elapsed) : null;
   const lap = live || replay ? currentLapNumber(sessionKey, elapsed) : null;
   const finished = (live || replay) && isRaceFinished(sessionKey, elapsed);
   const totalLaps = feed?.totalLaps ?? 0;
@@ -73,10 +79,14 @@ export function TimingHeader() {
         if (hit) {
           setOpenMeta({
             meeting_name: String(
-              hit.meeting_name || hit.circuit_short_name || `Session ${sessionKey}`,
+              hit.meeting_name ||
+                hit.circuit_short_name ||
+                `Session ${sessionKey}`,
             ),
             circuit_short_name: String(hit.circuit_short_name || ""),
-            country_name: hit.country_name ? String(hit.country_name) : undefined,
+            country_name: hit.country_name
+              ? String(hit.country_name)
+              : undefined,
             year: hit.year != null ? Number(hit.year) : 2024,
           });
         }
@@ -88,6 +98,14 @@ export function TimingHeader() {
       cancelled = true;
     };
   }, [sessionKey, isOpenF1]);
+
+  const weather = isOpenF1 ? archiveWeather : simWeather;
+  const showWeatherBar =
+    view === "timing" &&
+    weather &&
+    (isOpenF1
+      ? archiveMaxLap > 0
+      : lap != null);
 
   const titleLine =
     view === "standings"
@@ -105,7 +123,10 @@ export function TimingHeader() {
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
-            <span className="inline-block h-6 w-1 rounded-full bg-accent" aria-hidden />
+            <span
+              className="inline-block h-6 w-1 rounded-full bg-accent"
+              aria-hidden
+            />
             <h1 className="text-2xl font-extrabold tracking-[0.18em] text-fg sm:text-3xl">
               PITWALL
             </h1>
@@ -190,20 +211,51 @@ export function TimingHeader() {
         </div>
       </div>
 
-      {view === "timing" && weather && lap != null && (
+      {showWeatherBar && weather && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-2 rounded-lg bg-surface px-3 py-2 shadow-[var(--shadow-border)]">
-          <WeatherChip icon={Thermometer} label="Air" value={`${weather.air_temperature.toFixed(1)}°`} />
-          <WeatherChip icon={Gauge} label="Track" value={`${weather.track_temperature.toFixed(1)}°`} />
-          <WeatherChip icon={Droplets} label="Hum" value={`${Math.round(weather.humidity)}%`} />
-          <WeatherChip icon={Wind} label="Wind" value={`${weather.wind_speed.toFixed(1)}`} />
-          <WeatherChip icon={Cloud} label="Sky" value={weather.rainfall ? "Rain" : "Dry"} />
+          <WeatherChip
+            icon={Thermometer}
+            label="Air"
+            value={`${weather.air_temperature.toFixed(1)}°`}
+          />
+          <WeatherChip
+            icon={Gauge}
+            label="Track"
+            value={`${weather.track_temperature.toFixed(1)}°`}
+          />
+          <WeatherChip
+            icon={Droplets}
+            label="Hum"
+            value={`${Math.round(weather.humidity)}%`}
+          />
+          <WeatherChip
+            icon={Wind}
+            label="Wind"
+            value={`${weather.wind_speed.toFixed(1)}`}
+          />
+          <WeatherChip
+            icon={Cloud}
+            label="Sky"
+            value={weather.rainfall ? "Rain" : "Dry"}
+          />
           <span className="ml-auto flex items-baseline gap-2">
-            <span className="text-xs tracking-widest text-muted uppercase">Lap</span>
-            <span className="font-mono text-lg font-semibold tabular">
-              {String(lap).padStart(2, "0")}
-              <span className="text-sm text-muted">/{totalLaps}</span>
+            <span className="text-xs tracking-widest text-muted uppercase">
+              Lap
             </span>
-            <span className="font-mono text-xs text-muted tabular">{formatClock(elapsed)}</span>
+            <span className="font-mono text-lg font-semibold tabular">
+              {String(
+                isOpenF1 ? archiveLap : (lap ?? 0),
+              ).padStart(2, "0")}
+              <span className="text-sm text-muted">
+                /{isOpenF1 ? archiveMaxLap : totalLaps}
+              </span>
+            </span>
+            <span className="font-mono text-xs text-muted tabular">
+              {formatClock(isOpenF1 ? archiveElapsed : elapsed)}
+              {isOpenF1 && archiveDuration > 0
+                ? ` / ${formatClock(archiveDuration)}`
+                : ""}
+            </span>
           </span>
         </div>
       )}
