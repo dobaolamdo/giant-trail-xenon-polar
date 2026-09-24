@@ -201,6 +201,35 @@ function fmtLap(v: number | string | null | undefined): string {
   return `${m}:${s.toFixed(3).padStart(6, "0")}`;
 }
 
+/** Simulate AFTER INSERT trigger: mark session-best sectors in order of lap_number. */
+function annotatePurple(laps: RawLap[]): RawLap[] {
+  const sorted = [...laps].sort(
+    (a, b) => a.lap_number - b.lap_number || Number(a.driver_number) - Number(b.driver_number),
+  );
+  let bestS1 = Infinity;
+  let bestS2 = Infinity;
+  let bestS3 = Infinity;
+  const out: RawLap[] = [];
+  for (const l of sorted) {
+    const s1 = Number(l.duration_sector_1);
+    const s2 = Number(l.duration_sector_2);
+    const s3 = Number(l.duration_sector_3);
+    const p1 = Number.isFinite(s1) && s1 > 0 && s1 < bestS1;
+    const p2 = Number.isFinite(s2) && s2 > 0 && s2 < bestS2;
+    const p3 = Number.isFinite(s3) && s3 > 0 && s3 < bestS3;
+    if (p1) bestS1 = s1;
+    if (p2) bestS2 = s2;
+    if (p3) bestS3 = s3;
+    out.push({
+      ...l,
+      is_purple_s1: p1 || Boolean(l.is_purple_s1),
+      is_purple_s2: p2 || Boolean(l.is_purple_s2),
+      is_purple_s3: p3 || Boolean(l.is_purple_s3),
+    });
+  }
+  return out;
+}
+
 export function PitwallShell() {
   const elapsed = useRaceClock((s) => s.elapsed);
   const selected = useRaceClock((s) => s.selectedDriver);
@@ -482,10 +511,15 @@ export function PitwallShell() {
     };
   }, [isOpenF1, sessionKey, selected, row, meta]);
 
+  const annotatedLaps = useMemo(
+    () => (isOpenF1 ? annotatePurple(rawLaps) : rawLaps),
+    [isOpenF1, rawLaps],
+  );
+
   const displayLaps = useMemo(() => {
     if (!isOpenF1) return Get_Driver_Lap_History(sessionKey, activeNumber, elapsed);
-    return lapsForDriver(rawLaps, activeNumber, currentLap);
-  }, [isOpenF1, sessionKey, activeNumber, elapsed, rawLaps, currentLap]);
+    return lapsForDriver(annotatedLaps, activeNumber, currentLap);
+  }, [isOpenF1, sessionKey, activeNumber, elapsed, annotatedLaps, currentLap]);
 
   const pits = useMemo(() => {
     if (isOpenF1) return of1Pits.filter((p) => p.lap_number <= currentLap);
@@ -501,27 +535,27 @@ export function PitwallShell() {
   }, [isOpenF1, of1Control, currentLap, sessionKey, elapsed]);
 
   const sampleLap = useMemo(() => {
-    if (!isOpenF1 || rawLaps.length === 0) return null;
+    if (!isOpenF1 || annotatedLaps.length === 0) return null;
     return (
-      rawLaps.find(
+      annotatedLaps.find(
         (l) =>
           Number(l.driver_number) === activeNumber &&
           l.lap_number === currentLap &&
           Number(l.lap_duration) > 0,
       ) ||
-      rawLaps.find(
+      annotatedLaps.find(
         (l) =>
           Number(l.driver_number) === activeNumber && Number(l.lap_duration) > 0,
       ) ||
-      rawLaps.find((l) => Number(l.lap_duration) > 0) ||
+      annotatedLaps.find((l) => Number(l.lap_duration) > 0) ||
       null
     );
-  }, [isOpenF1, rawLaps, activeNumber, currentLap]);
+  }, [isOpenF1, annotatedLaps, activeNumber, currentLap]);
 
   const purpleLog = useMemo(() => {
     if (!isOpenF1) return [] as { kind: string; lap: number; code: string; value: number }[];
     const out: { kind: string; lap: number; code: string; value: number }[] = [];
-    for (const l of rawLaps) {
+    for (const l of annotatedLaps) {
       if (l.lap_number > currentLap) continue;
       const code =
         meta.get(Number(l.driver_number))?.code || String(l.driver_number);
@@ -537,8 +571,8 @@ export function PitwallShell() {
         out.push({ kind, lap: l.lap_number, code, value: n });
       }
     }
-    return out.slice(-8).reverse();
-  }, [isOpenF1, rawLaps, currentLap, meta]);
+    return out.slice(-12).reverse();
+  }, [isOpenF1, annotatedLaps, currentLap, meta]);
 
   function pick(n: number) {
     selectDriver(n);
