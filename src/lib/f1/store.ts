@@ -70,6 +70,15 @@ export const usePitwall = create<PitwallState>((set) => ({
       archiveWeather:
         p.weather !== undefined ? p.weather : s.archiveWeather,
     })),
-  goLive: () => set({ view: "timing", sessionKey: 9472 }),
+  goLive: () =>
+    set({
+      view: "timing",
+      sessionKey: 11377, // Baku 2026 Race — OpenF1 live/poll
+      archiveElapsed: 0,
+      archiveDuration: 0,
+      archiveLap: 1,
+      archiveMaxLap: 0,
+      archiveWeather: null,
+    }),
   openArchive: () => set({ view: "standings", standingsTab: "calendar" }),
 }));
