@@ -1,4 +1,12 @@
-/** Live OpenF1 poll for Baku race (session 11377) and similar live keys. */
+/** Live / post-session OpenF1 poll (Baku 11377 and any session_key). */
+import {
+  rankFromLaps,
+  rankFromSessionResult,
+  type RankedRow,
+  type RankDriverMeta,
+  type SessionResultRow,
+} from "./rank";
+
 export type LiveRawLap = {
   driver_number: number;
   lap_number: number;
@@ -11,12 +19,7 @@ export type LiveRawLap = {
   is_purple_s3?: number | boolean;
 };
 
-export type LiveDriverMeta = {
-  full_name: string;
-  team_name: string;
-  team_colour: string;
-  code?: string;
-};
+export type LiveDriverMeta = RankDriverMeta;
 
 export type LivePullResult = {
   locked: boolean;
@@ -24,6 +27,7 @@ export type LivePullResult = {
   drivers?: Map<number, LiveDriverMeta>;
   laps?: LiveRawLap[];
   maxLap?: number;
+  board?: RankedRow[];
   weather?: {
     air_temperature: number;
     track_temperature: number;
@@ -33,6 +37,7 @@ export type LivePullResult = {
   };
   control?: any[];
   pits?: any[];
+  results?: SessionResultRow[];
 };
 
 const OF1 = "https://api.openf1.org/v1";
@@ -40,7 +45,10 @@ const OF1 = "https://api.openf1.org/v1";
 function isRestricted(data: unknown): string | null {
   if (data && typeof data === "object" && !Array.isArray(data)) {
     const d = data as { detail?: string };
-    if (d.detail && /restrict|auth|sponsor|sign up|session in progress/i.test(String(d.detail))) {
+    if (
+      d.detail &&
+      /restrict|auth|sponsor|sign up|session in progress/i.test(String(d.detail))
+    ) {
       return String(d.detail);
     }
   }
@@ -53,7 +61,10 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
     const dData = await dRes.json();
     const lock = isRestricted(dData);
     if (lock) {
-      return { locked: true, status: "Live locked — OpenF1 sponsor required during session" };
+      return {
+        locked: true,
+        status: "Live locked — OpenF1 sponsor required during session",
+      };
     }
 
     const drivers = new Map<number, LiveDriverMeta>();
@@ -70,11 +81,20 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
       }
     }
 
-    const lRes = await fetch(`${OF1}/laps?session_key=${sessionKey}`);
+    const [lRes, resRes] = await Promise.all([
+      fetch(`${OF1}/laps?session_key=${sessionKey}`),
+      fetch(`${OF1}/session_result?session_key=${sessionKey}`),
+    ]);
     const lData = await lRes.json();
+    const resData = await resRes.json();
+
     const lock2 = isRestricted(lData);
     if (lock2) {
-      return { locked: true, status: "Live locked — OpenF1 sponsor required during session", drivers };
+      return {
+        locked: true,
+        status: "Live locked — OpenF1 sponsor required during session",
+        drivers,
+      };
     }
 
     let laps: LiveRawLap[] = [];
@@ -89,14 +109,47 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
           duration_sector_1: r.duration_sector_1,
           duration_sector_2: r.duration_sector_2,
           duration_sector_3: r.duration_sector_3,
-          is_purple_s1: r.is_purple_s1,
-          is_purple_s2: r.is_purple_s2,
-          is_purple_s3: r.is_purple_s3,
         }));
       maxLap = laps.reduce((a, l) => Math.max(a, l.lap_number), 0);
-    } else if (lData && typeof lData === "object" && /no results/i.test(String((lData as any).detail ?? ""))) {
+    } else if (
+      lData &&
+      typeof lData === "object" &&
+      /no results/i.test(String((lData as any).detail ?? ""))
+    ) {
       return { locked: false, status: "Waiting for first lap…", drivers };
     }
+
+    const results: SessionResultRow[] = Array.isArray(resData)
+      ? resData
+          .filter((r: any) => r.driver_number != null)
+          .map((r: any) => ({
+            position: r.position != null ? Number(r.position) : null,
+            driver_number: Number(r.driver_number),
+            number_of_laps:
+              r.number_of_laps != null ? Number(r.number_of_laps) : null,
+            points: r.points != null ? Number(r.points) : null,
+            dnf: Boolean(r.dnf),
+            dns: Boolean(r.dns),
+            dsq: Boolean(r.dsq),
+            duration: r.duration != null ? Number(r.duration) : null,
+            gap_to_leader: r.gap_to_leader,
+          }))
+      : [];
+
+    const dnfDrivers = new Set<
+      number
+    >();
+    for (const r of results) {
+      if (r.dnf || r.dns || r.dsq || r.position == null) {
+        dnfDrivers.add(r.driver_number);
+      }
+    }
+
+    // Prefer official classification when positions exist
+    const hasOfficial = results.some((r) => r.position != null && !r.dnf);
+    const board = hasOfficial
+      ? rankFromSessionResult(results, drivers)
+      : rankFromLaps(laps, drivers, { maxLap, dnfDrivers });
 
     let weather: LivePullResult["weather"];
     let control: any[] | undefined;
@@ -135,28 +188,37 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
         pits = pitData
           .filter((r: any) => r.driver_number != null)
           .map((r: any) => {
-            const num = Number(r.driver_number);
-            const dm = drivers.get(num);
+            const n = Number(r.driver_number);
+            const dm = drivers.get(n);
             return {
-              driver_number: num,
-              full_name: dm?.full_name ?? `#${num}`,
+              driver_number: n,
+              full_name: dm?.full_name ?? `#${n}`,
               lap_number: Number(r.lap_number) || 0,
               stop_duration: Number(r.stop_duration ?? r.pit_duration) || 0,
               lane_duration: Number(r.lane_duration ?? r.pit_duration) || 0,
             };
           });
       }
-    } catch {}
+    } catch {
+      /* optional feeds */
+    }
 
+    const finished = hasOfficial;
     return {
       locked: false,
-      status: maxLap > 0 ? `LIVE · lap ${maxLap}` : "Waiting for first lap…",
+      status: finished
+        ? `Result · ${maxLap} laps`
+        : maxLap > 0
+          ? `LIVE · lap ${maxLap}`
+          : "Waiting for first lap…",
       drivers,
       laps,
       maxLap,
+      board,
       weather,
       control,
       pits,
+      results,
     };
   } catch {
     return { locked: false, status: "Poll error — retrying…" };
