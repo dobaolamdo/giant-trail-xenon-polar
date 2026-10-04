@@ -1,4 +1,5 @@
-/** Live / post-session OpenF1 poll (Baku 11377 and any session_key). */
+/** OpenF1 poll + fallback Baku Race 11377 khi API lock. */
+import { BAKU_RACE_KEY, bakuFallbackBoard, bakuFallbackDrivers } from "./baku-fallback";
 import {
   rankFromLaps,
   rankFromSessionResult,
@@ -14,9 +15,6 @@ export type LiveRawLap = {
   duration_sector_1?: number | string | null;
   duration_sector_2?: number | string | null;
   duration_sector_3?: number | string | null;
-  is_purple_s1?: number | boolean;
-  is_purple_s2?: number | boolean;
-  is_purple_s3?: number | boolean;
 };
 
 export type LiveDriverMeta = RankDriverMeta;
@@ -47,12 +45,24 @@ function isRestricted(data: unknown): string | null {
     const d = data as { detail?: string };
     if (
       d.detail &&
-      /restrict|auth|sponsor|sign up|session in progress/i.test(String(d.detail))
+      /restrict|auth|sponsor|sign up|session in progress|live f1/i.test(
+        String(d.detail),
+      )
     ) {
       return String(d.detail);
     }
   }
   return null;
+}
+
+function bakuOffline(): LivePullResult {
+  return {
+    locked: false,
+    status: "Baku 2026 Race · kết quả (offline cache)",
+    drivers: bakuFallbackDrivers(),
+    board: bakuFallbackBoard(),
+    maxLap: 51,
+  };
 }
 
 export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
@@ -61,9 +71,10 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
     const dData = await dRes.json();
     const lock = isRestricted(dData);
     if (lock) {
+      if (sessionKey === BAKU_RACE_KEY) return bakuOffline();
       return {
         locked: true,
-        status: "Live locked — OpenF1 sponsor required during session",
+        status: "OpenF1 đang khóa (có session live) — thử lại sau khi session kết thúc",
       };
     }
 
@@ -88,11 +99,11 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
     const lData = await lRes.json();
     const resData = await resRes.json();
 
-    const lock2 = isRestricted(lData);
-    if (lock2) {
+    if (isRestricted(lData) || isRestricted(resData)) {
+      if (sessionKey === BAKU_RACE_KEY) return bakuOffline();
       return {
         locked: true,
-        status: "Live locked — OpenF1 sponsor required during session",
+        status: "OpenF1 đang khóa — thử lại sau",
         drivers,
       };
     }
@@ -116,6 +127,7 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
       typeof lData === "object" &&
       /no results/i.test(String((lData as any).detail ?? ""))
     ) {
+      if (sessionKey === BAKU_RACE_KEY) return bakuOffline();
       return { locked: false, status: "Waiting for first lap…", drivers };
     }
 
@@ -136,30 +148,26 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
           }))
       : [];
 
-    const dnfDrivers = new Set<
-      number
-    >();
+    const dnfDrivers = new Set<number>();
     for (const r of results) {
       if (r.dnf || r.dns || r.dsq || r.position == null) {
         dnfDrivers.add(r.driver_number);
       }
     }
 
-    // Prefer official classification when positions exist
     const hasOfficial = results.some((r) => r.position != null && !r.dnf);
-    const board = hasOfficial
-      ? rankFromSessionResult(results, drivers)
-      : rankFromLaps(laps, drivers, { maxLap, dnfDrivers });
+    let board =
+      hasOfficial
+        ? rankFromSessionResult(results, drivers)
+        : rankFromLaps(laps, drivers, { maxLap, dnfDrivers });
+
+    if (board.length === 0 && sessionKey === BAKU_RACE_KEY) {
+      return bakuOffline();
+    }
 
     let weather: LivePullResult["weather"];
-    let control: any[] | undefined;
-    let pits: any[] | undefined;
     try {
-      const [wRes, rcRes, pitRes] = await Promise.all([
-        fetch(`${OF1}/weather?session_key=${sessionKey}`),
-        fetch(`${OF1}/race_control?session_key=${sessionKey}`),
-        fetch(`${OF1}/pit?session_key=${sessionKey}`),
-      ]);
+      const wRes = await fetch(`${OF1}/weather?session_key=${sessionKey}`);
       const wData = await wRes.json();
       if (Array.isArray(wData) && wData.length > 0) {
         const mid = wData[wData.length - 1]!;
@@ -171,56 +179,26 @@ export async function pullLiveOf1(sessionKey: number): Promise<LivePullResult> {
           rainfall: Number(mid.rainfall) || 0,
         };
       }
-      const rcData = await rcRes.json();
-      if (Array.isArray(rcData)) {
-        control = rcData.map((r: any) => ({
-          date: String(r.date ?? ""),
-          category: String(r.category ?? ""),
-          flag: String(r.flag ?? r.category ?? ""),
-          scope: String(r.scope ?? ""),
-          driver_number: r.driver_number != null ? Number(r.driver_number) : null,
-          message: String(r.message ?? ""),
-          lap_number: r.lap_number != null ? Number(r.lap_number) : null,
-        }));
-      }
-      const pitData = await pitRes.json();
-      if (Array.isArray(pitData)) {
-        pits = pitData
-          .filter((r: any) => r.driver_number != null)
-          .map((r: any) => {
-            const n = Number(r.driver_number);
-            const dm = drivers.get(n);
-            return {
-              driver_number: n,
-              full_name: dm?.full_name ?? `#${n}`,
-              lap_number: Number(r.lap_number) || 0,
-              stop_duration: Number(r.stop_duration ?? r.pit_duration) || 0,
-              lane_duration: Number(r.lane_duration ?? r.pit_duration) || 0,
-            };
-          });
-      }
     } catch {
-      /* optional feeds */
+      /* optional */
     }
 
-    const finished = hasOfficial;
     return {
       locked: false,
-      status: finished
-        ? `Result · ${maxLap} laps`
+      status: hasOfficial
+        ? `Result · ${maxLap || 51} laps`
         : maxLap > 0
           ? `LIVE · lap ${maxLap}`
           : "Waiting for first lap…",
       drivers,
       laps,
-      maxLap,
+      maxLap: maxLap || (hasOfficial ? 51 : 0),
       board,
       weather,
-      control,
-      pits,
       results,
     };
   } catch {
+    if (sessionKey === BAKU_RACE_KEY) return bakuOffline();
     return { locked: false, status: "Poll error — retrying…" };
   }
 }
