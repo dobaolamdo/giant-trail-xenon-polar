@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import { SESSION_KEY } from "./simulate";
+import { BAKU_RACE_KEY } from "./baku-fallback";
 
 export type AppView = "timing" | "standings" | "schema";
 export type StandingsTab = "calendar" | "drivers" | "constructors";
@@ -17,7 +17,6 @@ type PitwallState = {
   year: number;
   sessionKey: number;
   standingsTab: StandingsTab;
-  /** OpenF1 archive: elapsed seconds in race clock */
   archiveElapsed: number;
   archiveDuration: number;
   archiveLap: number;
@@ -40,8 +39,8 @@ type PitwallState = {
 
 export const usePitwall = create<PitwallState>((set) => ({
   view: "timing",
-  year: 2024,
-  sessionKey: 9472,
+  year: 2026,
+  sessionKey: BAKU_RACE_KEY,
   standingsTab: "calendar",
   archiveElapsed: 0,
   archiveDuration: 0,
@@ -73,11 +72,11 @@ export const usePitwall = create<PitwallState>((set) => ({
   goLive: () =>
     set({
       view: "timing",
-      sessionKey: 11377, // Baku 2026 Race — OpenF1 live/poll
+      sessionKey: BAKU_RACE_KEY,
       archiveElapsed: 0,
       archiveDuration: 0,
       archiveLap: 1,
-      archiveMaxLap: 0,
+      archiveMaxLap: 51,
       archiveWeather: null,
     }),
   openArchive: () => set({ view: "standings", standingsTab: "calendar" }),
