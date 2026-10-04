@@ -1,17 +1,32 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Pause, Play, RotateCcw } from "lucide-react";
 import { usePitwall } from "@/lib/f1/store";
 import { TimingHeader } from "./header";
 import { pullLiveOf1 } from "@/lib/f1/live-of1";
 import { BAKU_RACE_KEY, bakuFallbackBoard } from "@/lib/f1/baku-fallback";
-import { rankFromLaps, type RankDriverMeta, type RankedRow } from "@/lib/f1/rank";
+import {
+  rankFromLaps,
+  type RankDriverMeta,
+  type RankedRow,
+} from "@/lib/f1/rank";
 import { Leaderboard } from "./leaderboard";
 import { ArchiveView } from "./archive";
 import { SchemaView } from "./schema-view";
-import type { LeaderboardRow } from "@/lib/f1/types";
+import { DriverDetail } from "./driver-detail";
+import type {
+  DriverListRow,
+  LapHistoryRow,
+  LeaderboardRow,
+} from "@/lib/f1/types";
 import { Button } from "@/components/ui/button";
+import { Slider } from "@/components/ui/slider";
+import { cn } from "@/lib/utils";
 
 const API =
   import.meta.env.VITE_API_URL || "https://f1-dashboard-sbrl.onrender.com";
+
+const SPEEDS = [8, 16, 32, 64] as const;
+type Speed = (typeof SPEEDS)[number];
 
 function isOpenF1Key(k: number) {
   return k >= 9000;
@@ -21,30 +36,94 @@ function colour(c: unknown): string {
   return String(c ?? "888888").replace(/^#/, "");
 }
 
-/** Map procedure / API leaderboard rows → UI rows */
-function mapApiLeaderboard(rows: any[]): LeaderboardRow[] {
-  return rows.map((r, i) => ({
-    live_rank: Number(r.position ?? r.live_rank ?? i + 1),
-    driver_number: Number(r.driver_number),
-    full_name: String(r.full_name ?? r.name_acronym ?? `#${r.driver_number}`),
-    team_name: String(r.team_name ?? ""),
-    team_colour: colour(r.team_colour),
-    gap_to_leader:
-      r.gap_to_leader != null && r.gap_to_leader !== ""
-        ? Number(r.gap_to_leader)
-        : null,
-    gap_to_car_ahead: null,
-    last_lap:
-      r.lap_duration != null && r.lap_duration !== ""
-        ? Number(r.lap_duration)
-        : r.last_lap != null
-          ? Number(r.last_lap)
-          : null,
-    status: r.dnf || r.status === "DNF" ? "DNF" : null,
-    position_change: 0,
-    code: r.name_acronym != null ? String(r.name_acronym) : r.code,
-    points: r.points != null ? Number(r.points) : undefined,
-  }));
+type RawLap = {
+  driver_number: number;
+  lap_number: number;
+  lap_duration: number | null;
+  duration_sector_1: number | null;
+  duration_sector_2: number | null;
+  duration_sector_3: number | null;
+};
+
+function num(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** Purple = session-best sector up to this lap (client-side, like trigger). */
+function annotatePurple(
+  laps: RawLap[],
+  driver: number,
+  upToLap: number,
+): LapHistoryRow[] {
+  let minS1 = Infinity;
+  let minS2 = Infinity;
+  let minS3 = Infinity;
+  let minLap = Infinity;
+  const chron = [...laps]
+    .filter((l) => l.lap_number <= upToLap)
+    .sort(
+      (a, b) =>
+        a.lap_number - b.lap_number || a.driver_number - b.driver_number,
+    );
+
+  const purpleAt = new Map<
+    string,
+    { s1: boolean; s2: boolean; s3: boolean; pb: boolean }
+  >();
+
+  for (const l of chron) {
+    const s1 = num(l.duration_sector_1);
+    const s2 = num(l.duration_sector_2);
+    const s3 = num(l.duration_sector_3);
+    const ld = num(l.lap_duration);
+    let ps1 = false;
+    let ps2 = false;
+    let ps3 = false;
+    let pb = false;
+    if (s1 != null && s1 > 0 && s1 < minS1) {
+      minS1 = s1;
+      ps1 = true;
+    }
+    if (s2 != null && s2 > 0 && s2 < minS2) {
+      minS2 = s2;
+      ps2 = true;
+    }
+    if (s3 != null && s3 > 0 && s3 < minS3) {
+      minS3 = s3;
+      ps3 = true;
+    }
+    if (ld != null && ld > 0 && ld < minLap) {
+      minLap = ld;
+      pb = true;
+    }
+    purpleAt.set(`${l.driver_number}-${l.lap_number}`, {
+      s1: ps1,
+      s2: ps2,
+      s3: ps3,
+      pb,
+    });
+  }
+
+  return chron
+    .filter((l) => l.driver_number === driver)
+    .map((l) => {
+      const p = purpleAt.get(`${l.driver_number}-${l.lap_number}`);
+      return {
+        lap_number: l.lap_number,
+        lap_duration: num(l.lap_duration) ?? 0,
+        duration_sector_1: num(l.duration_sector_1) ?? 0,
+        duration_sector_2: num(l.duration_sector_2) ?? 0,
+        duration_sector_3: num(l.duration_sector_3) ?? 0,
+        is_pit_out_lap: false,
+        is_purple_s1: Boolean(p?.s1),
+        is_purple_s2: Boolean(p?.s2),
+        is_purple_s3: Boolean(p?.s3),
+        is_personal_best: Boolean(p?.pb),
+        compound: "MEDIUM" as const,
+      };
+    });
 }
 
 function rankedToUi(rows: RankedRow[]): LeaderboardRow[] {
@@ -61,6 +140,31 @@ function rankedToUi(rows: RankedRow[]): LeaderboardRow[] {
     position_change: r.position_change,
     code: r.code,
     points: r.points,
+    compound: "MEDIUM",
+  }));
+}
+
+function mapApiLeaderboard(rows: any[]): LeaderboardRow[] {
+  return rows.map((r, i) => ({
+    live_rank: Number(r.position ?? r.live_rank ?? i + 1),
+    driver_number: Number(r.driver_number),
+    full_name: String(r.full_name ?? r.name_acronym ?? `#${r.driver_number}`),
+    team_name: String(r.team_name ?? ""),
+    team_colour: colour(r.team_colour),
+    gap_to_leader:
+      r.gap_to_leader != null && r.gap_to_leader !== ""
+        ? Number(r.gap_to_leader)
+        : null,
+    gap_to_car_ahead: null,
+    last_lap:
+      r.lap_duration != null && r.lap_duration !== ""
+        ? Number(r.lap_duration)
+        : null,
+    status: r.dnf || r.status === "DNF" ? "DNF" : null,
+    position_change: 0,
+    code: r.name_acronym != null ? String(r.name_acronym) : r.code,
+    points: r.points != null ? Number(r.points) : undefined,
+    compound: "MEDIUM",
   }));
 }
 
@@ -71,153 +175,232 @@ export function PitwallShell() {
 
   const [status, setStatus] = useState("");
   const [locked, setLocked] = useState(false);
-  const [board, setBoard] = useState<LeaderboardRow[]>([]);
-  const [maxLap, setMaxLap] = useState(0);
   const [loading, setLoading] = useState(false);
+  const [meta, setMeta] = useState<Map<number, RankDriverMeta>>(new Map());
+  const [rawLaps, setRawLaps] = useState<RawLap[]>([]);
+  const [maxLap, setMaxLap] = useState(0);
+  const [currentLap, setCurrentLap] = useState(1);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState<Speed>(16);
+  const [selected, setSelected] = useState(0);
+  const [finalBoard, setFinalBoard] = useState<LeaderboardRow[] | null>(null);
+  const [side, setSide] = useState<"driver" | "sql">("driver");
 
+  const playingRef = useRef(playing);
+  const speedRef = useRef(speed);
+  const maxLapRef = useRef(maxLap);
+  playingRef.current = playing;
+  speedRef.current = speed;
+  maxLapRef.current = maxLap;
+
+  // Load session data
   useEffect(() => {
     if (view !== "timing" || !isOpenF1Key(sessionKey)) return;
     let cancelled = false;
 
     const load = async () => {
       setLoading(true);
-      let got = false;
+      setPlaying(false);
+      setRawLaps([]);
+      setFinalBoard(null);
+      setCurrentLap(1);
+      setMaxLap(0);
 
-      // ——— 1) MySQL via Render (ưu tiên khi OpenF1 lock) ———
+      let m = new Map<number, RankDriverMeta>();
+      let laps: RawLap[] = [];
+      let gotLb: LeaderboardRow[] | null = null;
+
+      // MySQL leaderboard (names + final order)
       try {
         const lbRes = await fetch(
           `${API}/api/leaderboard?session_key=${sessionKey}`,
         );
         if (lbRes.ok) {
           const lb = await lbRes.json();
-          if (!cancelled && Array.isArray(lb) && lb.length > 0) {
-            const mapped = mapApiLeaderboard(lb);
-            // Chỉ nhận board “đủ” (≥5 xe) — tránh 2–3 dòng rác
-            if (mapped.length >= 5) {
-              setBoard(mapped);
-              const mx = Math.max(
-                0,
-                ...lb.map((r: any) => Number(r.lap_number) || 0),
-              );
-              setMaxLap(mx);
-              setStatus(`MySQL · ${mapped.length} drivers`);
-              setLocked(false);
-              setArchiveClock({ maxLap: mx || mapped.length, lap: mx || 1 });
-              got = true;
+          if (Array.isArray(lb) && lb.length >= 5) {
+            gotLb = mapApiLeaderboard(lb);
+            for (const r of lb) {
+              const n = Number(r.driver_number);
+              if (!n) continue;
+              m.set(n, {
+                full_name: String(r.full_name ?? r.name_acronym ?? `#${n}`),
+                team_name: String(r.team_name ?? ""),
+                team_colour: colour(r.team_colour),
+                code:
+                  r.name_acronym != null ? String(r.name_acronym) : undefined,
+              });
             }
           }
         }
       } catch {
-        /* continue */
+        /* */
       }
 
-      // ——— 2) session-laps + rank (kèm tên từ leaderboard nếu có) ———
-      if (!got) {
-        try {
-          const [lapsRes, lbRes] = await Promise.all([
-            fetch(`${API}/api/session-laps?session_key=${sessionKey}`),
-            fetch(`${API}/api/leaderboard?session_key=${sessionKey}`),
-          ]);
-          const laps = lapsRes.ok ? await lapsRes.json() : [];
-          const lb = lbRes.ok ? await lbRes.json() : [];
-          if (!cancelled && Array.isArray(laps) && laps.length > 0) {
-            const meta = new Map<number, RankDriverMeta>();
-            if (Array.isArray(lb)) {
-              for (const r of lb) {
-                const n = Number(r.driver_number);
-                if (!n) continue;
-                meta.set(n, {
-                  full_name: String(
-                    r.full_name ?? r.name_acronym ?? `#${n}`,
-                  ),
-                  team_name: String(r.team_name ?? ""),
-                  team_colour: colour(r.team_colour),
-                  code:
-                    r.name_acronym != null ? String(r.name_acronym) : undefined,
-                });
-              }
-            }
-            const mx = laps.reduce(
-              (a: number, l: { lap_number: number }) =>
-                Math.max(a, Number(l.lap_number) || 0),
-              0,
-            );
-            const ranked = rankFromLaps(laps, meta, { maxLap: mx });
-            if (ranked.length > 0) {
-              setBoard(rankedToUi(ranked));
-              setMaxLap(mx);
-              setStatus(`MySQL laps · ${laps.length} rows · lap ${mx}`);
-              setLocked(false);
-              setArchiveClock({ maxLap: mx, lap: mx });
-              got = true;
-            }
+      // MySQL laps
+      try {
+        const lr = await fetch(
+          `${API}/api/session-laps?session_key=${sessionKey}`,
+        );
+        if (lr.ok) {
+          const data = await lr.json();
+          if (Array.isArray(data) && data.length > 0) {
+            laps = data
+              .filter(
+                (r: any) => r.driver_number != null && r.lap_number != null,
+              )
+              .map((r: any) => ({
+                driver_number: Number(r.driver_number),
+                lap_number: Number(r.lap_number),
+                lap_duration: num(r.lap_duration),
+                duration_sector_1: num(r.duration_sector_1),
+                duration_sector_2: num(r.duration_sector_2),
+                duration_sector_3: num(r.duration_sector_3),
+              }));
           }
-        } catch {
-          /* continue */
         }
+      } catch {
+        /* */
       }
 
-      // ——— 3) OpenF1 (khi không bị lock) ———
-      if (!got) {
+      // OpenF1 if needed
+      if (laps.length === 0 || m.size === 0) {
         try {
           const r = await pullLiveOf1(sessionKey);
-          if (cancelled) return;
-          setLocked(r.locked);
-          if (r.board && r.board.length > 0) {
-            setBoard(rankedToUi(r.board));
-            setMaxLap(r.maxLap ?? 0);
-            setStatus(r.status);
-            setArchiveClock({
-              maxLap: r.maxLap ?? 0,
-              lap: r.maxLap ?? 0,
-              weather: r.weather
-                ? {
-                    air_temperature: r.weather.air_temperature,
-                    track_temperature: r.weather.track_temperature,
-                    humidity: r.weather.humidity,
-                    wind_speed: r.weather.wind_speed,
-                    rainfall: r.weather.rainfall,
-                  }
-                : null,
-            });
-            got = true;
-          } else if (!got) {
-            setStatus(r.status);
+          if (!cancelled) {
+            setLocked(r.locked);
+            if (r.drivers && r.drivers.size > 0) m = r.drivers;
+            if (r.laps && r.laps.length > 0) {
+              laps = r.laps.map((l) => ({
+                driver_number: l.driver_number,
+                lap_number: l.lap_number,
+                lap_duration: num(l.lap_duration),
+                duration_sector_1: num(l.duration_sector_1),
+                duration_sector_2: num(l.duration_sector_2),
+                duration_sector_3: num(l.duration_sector_3),
+              }));
+            }
+            if (r.board && r.board.length > 0 && !gotLb) {
+              gotLb = rankedToUi(r.board);
+            }
+            if (r.status) setStatus(r.status);
           }
         } catch {
-          if (!cancelled) setStatus("OpenF1 error");
+          if (!cancelled) setStatus("OpenF1 unavailable");
         }
       }
 
-      // ——— 4) Baku offline cache ———
-      if (!got && sessionKey === BAKU_RACE_KEY) {
-        const fb = bakuFallbackBoard();
-        setBoard(rankedToUi(fb));
-        setMaxLap(51);
-        setStatus("Baku 2026 · cached official result");
-        setLocked(false);
-        setArchiveClock({ maxLap: 51, lap: 51 });
-        got = true;
+      // Baku cache
+      if (
+        sessionKey === BAKU_RACE_KEY &&
+        laps.length === 0 &&
+        (!gotLb || gotLb.length === 0)
+      ) {
+        gotLb = rankedToUi(bakuFallbackBoard());
+        setStatus("Baku 2026 · cached result");
       }
 
-      if (!got && !cancelled) {
-        setBoard([]);
-        setStatus(
-          "No data — OpenF1 may be locked; pump this session to MySQL or wait",
-        );
+      if (cancelled) return;
+
+      const mx = laps.reduce((a, l) => Math.max(a, l.lap_number), 0);
+      setMeta(m);
+      setRawLaps(laps);
+      setMaxLap(mx);
+      setFinalBoard(gotLb);
+      setCurrentLap(mx > 0 ? 1 : 0);
+      if (gotLb?.[0]) setSelected(gotLb[0].driver_number);
+      else if (m.size > 0) setSelected([...m.keys()][0]!);
+
+      if (laps.length > 0) {
+        setStatus(`Replay · ${laps.length} laps · up to L${mx}`);
+        setLocked(false);
+      } else if (gotLb && gotLb.length > 0) {
+        setStatus(`Result · ${gotLb.length} drivers`);
+      } else {
+        setStatus("No data for this session");
       }
-      if (!cancelled) setLoading(false);
+
+      setArchiveClock({
+        maxLap: mx,
+        lap: 1,
+        elapsed: 0,
+        duration: mx,
+      });
+      setLoading(false);
     };
 
     load();
-    // Chỉ poll session “mới” (2026+); archive historical load 1 lần
-    const poll = sessionKey >= 11300;
-    const id = poll ? setInterval(load, 12000) : undefined;
     return () => {
       cancelled = true;
-      if (id) clearInterval(id);
     };
   }, [view, sessionKey, setArchiveClock]);
+
+  // Play loop — advance by lap
+  useEffect(() => {
+    if (!playing || maxLap <= 0) return;
+    // speed 16 ≈ ~1 lap / 0.4s
+    const ms = Math.max(80, 3200 / speed);
+    const id = setInterval(() => {
+      setCurrentLap((c) => {
+        if (c >= maxLapRef.current) {
+          setPlaying(false);
+          return maxLapRef.current;
+        }
+        return c + 1;
+      });
+    }, ms);
+    return () => clearInterval(id);
+  }, [playing, speed, maxLap]);
+
+  useEffect(() => {
+    setArchiveClock({ lap: currentLap, maxLap, elapsed: currentLap });
+  }, [currentLap, maxLap, setArchiveClock]);
+
+  const board: LeaderboardRow[] = useMemo(() => {
+    if (rawLaps.length > 0 && currentLap > 0) {
+      return rankedToUi(
+        rankFromLaps(rawLaps, meta, { maxLap: currentLap }),
+      );
+    }
+    if (finalBoard && finalBoard.length > 0) return finalBoard;
+    return [];
+  }, [rawLaps, meta, currentLap, finalBoard]);
+
+  const driverRow = board.find((b) => b.driver_number === selected);
+  const driverList: DriverListRow | undefined = useMemo(() => {
+    const m = meta.get(selected);
+    if (!m && !driverRow) return undefined;
+    return {
+      driver_number: selected,
+      full_name: m?.full_name ?? driverRow?.full_name ?? `#${selected}`,
+      team_name: m?.team_name ?? driverRow?.team_name ?? "",
+      team_colour: m?.team_colour ?? driverRow?.team_colour ?? "888888",
+      name_acronym: m?.code ?? driverRow?.code,
+      headshot_url: null,
+    };
+  }, [meta, selected, driverRow]);
+
+  const driverLaps = useMemo(
+    () =>
+      rawLaps.length > 0
+        ? annotatePurple(rawLaps, selected, currentLap || maxLap)
+        : [],
+    [rawLaps, selected, currentLap, maxLap],
+  );
+
+  const togglePlay = useCallback(() => {
+    if (maxLap <= 0) return;
+    if (currentLap >= maxLap) {
+      setCurrentLap(1);
+      setPlaying(true);
+      return;
+    }
+    setPlaying((p) => !p);
+  }, [maxLap, currentLap]);
+
+  const restart = useCallback(() => {
+    setCurrentLap(1);
+    setPlaying(true);
+  }, []);
 
   if (view === "standings") {
     return (
@@ -237,46 +420,140 @@ export function PitwallShell() {
     );
   }
 
+  const canReplay = rawLaps.length > 0 && maxLap > 0;
+
   return (
     <div className="flex min-h-dvh flex-col">
       <TimingHeader />
+
       {isOpenF1Key(sessionKey) && (
         <div
-          className={`mx-3 mt-1 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs sm:mx-4 ${
+          className={cn(
+            "mx-3 mt-1 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs sm:mx-4",
             locked
               ? "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/40"
-              : "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/40"
-          }`}
+              : "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/40",
+          )}
         >
           <span
-            className={`size-1.5 rounded-full ${
-              locked ? "bg-amber-400" : "bg-emerald-400 live-dot"
-            }`}
+            className={cn(
+              "size-1.5 rounded-full",
+              locked ? "bg-amber-400" : "bg-emerald-400 live-dot",
+            )}
           />
           <span className="font-mono tracking-wide">
             {status || (loading ? "Loading…" : `Session ${sessionKey}`)}
           </span>
           <span className="ml-auto text-[10px] uppercase opacity-70">
-            key {sessionKey} · lap {maxLap}
+            key {sessionKey}
+            {maxLap > 0 ? ` · L${currentLap}/${maxLap}` : ""}
           </span>
         </div>
       )}
-      <div className="flex min-h-0 flex-1 flex-col px-3 py-2 sm:px-4">
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 py-2 sm:flex-row sm:px-4">
         {board.length > 0 ? (
-          <Leaderboard
-            rows={board}
-            selected={board[0]?.driver_number ?? 0}
-            onSelect={() => {}}
-            mode={board.some((b) => b.points != null) ? "result" : "live"}
-          />
+          <>
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+              <Leaderboard
+                rows={board}
+                selected={selected}
+                onSelect={(n) => {
+                  setSelected(n);
+                  setSide("driver");
+                }}
+                mode={
+                  !canReplay && board.some((b) => b.points != null)
+                    ? "result"
+                    : "live"
+                }
+              />
+            </div>
+
+            <div className="flex min-h-[220px] w-full flex-col overflow-hidden rounded-lg border border-border bg-surface sm:min-h-0 sm:w-[min(100%,380px)]">
+              <div className="flex gap-1 border-b border-border p-2">
+                <Button
+                  size="sm"
+                  variant={side === "driver" ? "secondary" : "ghost"}
+                  className="flex-1"
+                  onClick={() => setSide("driver")}
+                >
+                  Driver
+                </Button>
+                <Button
+                  size="sm"
+                  variant={side === "sql" ? "secondary" : "ghost"}
+                  className="flex-1"
+                  onClick={() => setSide("sql")}
+                >
+                  SQL
+                </Button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden">
+                {side === "driver" && (
+                  <DriverDetail
+                    driver={driverList}
+                    row={driverRow}
+                    laps={driverLaps}
+                  />
+                )}
+                {side === "sql" && (
+                  <div className="h-full space-y-3 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed text-muted">
+                    <div>
+                      <p className="mb-1 text-xs tracking-widest text-subtle uppercase">
+                        Raw ingest
+                      </p>
+                      <pre className="rounded bg-surface-2 p-2 text-fg">
+                        {driverLaps.length > 0
+                          ? JSON.stringify(
+                              {
+                                driver: selected,
+                                lap: driverLaps[driverLaps.length - 1]?.lap_number,
+                                s1: driverLaps[driverLaps.length - 1]
+                                  ?.duration_sector_1,
+                                s2: driverLaps[driverLaps.length - 1]
+                                  ?.duration_sector_2,
+                                s3: driverLaps[driverLaps.length - 1]
+                                  ?.duration_sector_3,
+                              },
+                              null,
+                              2,
+                            )
+                          : "— no lap —"}
+                      </pre>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-xs tracking-widest text-sector-purple uppercase">
+                        Trigger · purple sector
+                      </p>
+                      <p className="text-fg">
+                        {driverLaps.some(
+                          (l) =>
+                            l.is_purple_s1 || l.is_purple_s2 || l.is_purple_s3,
+                        )
+                          ? "Session-best sector flagged (client mirror of AFTER INSERT trigger)."
+                          : "Play to advance — purple when sector beats session min."}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="mb-1 text-xs tracking-widest text-subtle uppercase">
+                        Derived · leaderboard
+                      </p>
+                      <pre className="rounded bg-surface-2 p-2 text-fg">
+                        {`CALL Get_Live_Leaderboard(${sessionKey})\n-- rank by laps then time; DNF last`}
+                      </pre>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
         ) : (
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <p className="max-w-md text-sm text-muted">
               {loading
-                ? "Loading classification…"
-                : locked
-                  ? "OpenF1 đang khóa vì có session live. Chặng đã pump vào MySQL vẫn xem được từ Archive."
-                  : "Chưa có data cho session này. Vào Archive chọn chặng 2024 đã pump, hoặc Live (Baku cache)."}
+                ? "Loading…"
+                : "Chưa có data. Archive → 2024 → Watch chặng đã pump, hoặc Live (Baku)."}
             </p>
             <Button
               size="sm"
@@ -288,6 +565,63 @@ export function PitwallShell() {
           </div>
         )}
       </div>
+
+      {/* Playback bar */}
+      {canReplay && (
+        <div className="sticky bottom-0 z-20 border-t border-border bg-surface px-3 py-2.5 sm:px-4">
+          <div className="mb-2">
+            <Slider
+              min={1}
+              max={Math.max(1, maxLap)}
+              step={1}
+              value={[Math.max(1, currentLap)]}
+              onValueChange={(v) => {
+                setPlaying(false);
+                setCurrentLap(v[0] ?? 1);
+              }}
+              aria-label="Lap progress"
+            />
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              variant="secondary"
+              size="icon-sm"
+              onClick={togglePlay}
+              aria-label={playing ? "Pause" : "Play"}
+            >
+              {playing && currentLap < maxLap ? (
+                <Pause className="size-4" />
+              ) : (
+                <Play className="size-4" />
+              )}
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              onClick={restart}
+              aria-label="Restart"
+            >
+              <RotateCcw className="size-4" />
+            </Button>
+            <div className="flex items-center gap-1">
+              {SPEEDS.map((s) => (
+                <Button
+                  key={s}
+                  variant={speed === s ? "default" : "ghost"}
+                  size="sm"
+                  onClick={() => setSpeed(s)}
+                  className="min-w-10 px-2"
+                >
+                  {s}x
+                </Button>
+              ))}
+            </div>
+            <span className="ml-auto font-mono text-xs text-muted tabular">
+              Lap {String(currentLap).padStart(2, "0")}/{maxLap}
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
