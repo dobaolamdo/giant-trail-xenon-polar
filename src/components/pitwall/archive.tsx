@@ -52,6 +52,17 @@ function sessionSortKey(name: string) {
   return i >= 0 ? i : 50;
 }
 
+function isLockPayload(data: unknown): boolean {
+  return (
+    !!data &&
+    typeof data === "object" &&
+    !Array.isArray(data) &&
+    /restrict|live f1|session in progress/i.test(
+      String((data as { detail?: string }).detail ?? ""),
+    )
+  );
+}
+
 export function ArchiveView() {
   const year = usePitwall((s) => s.year);
   const setYear = usePitwall((s) => s.setYear);
@@ -67,18 +78,76 @@ export function ArchiveView() {
   const [apiSessions, setApiSessions] = useState<ApiSession[]>([]);
   const [apiLoading, setApiLoading] = useState(false);
   const [source, setSource] = useState<"openf1" | "db" | "none">("none");
+  const [hint, setHint] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     setApiLoading(true);
+    setHint("");
+
     (async () => {
-      // 1) OpenF1 full calendar — FP1/FP2/FP3/Q/Race including Baku 2026
+      const base =
+        import.meta.env.VITE_API_URL ||
+        "https://f1-dashboard-sbrl.onrender.com";
+
+      // 1) MySQL trước (hoạt động khi OpenF1 lock)
+      try {
+        const res = await fetch(`${base}/api/sessions?year=${year}`);
+        const data = await res.json();
+        if (!cancelled && Array.isArray(data) && data.length > 0) {
+          const mapped = data.map((r: Record<string, unknown>) => ({
+            session_key: Number(r.session_key),
+            session_name:
+              r.session_name != null ? String(r.session_name) : "Race",
+            session_type:
+              r.session_type != null ? String(r.session_type) : "Race",
+            date_start: r.date_start != null ? String(r.date_start) : null,
+            meeting_key:
+              r.meeting_key != null ? Number(r.meeting_key) : undefined,
+            meeting_name:
+              r.meeting_name != null ? String(r.meeting_name) : null,
+            circuit_short_name:
+              r.circuit_short_name != null
+                ? String(r.circuit_short_name)
+                : null,
+            country_name:
+              r.country_name != null ? String(r.country_name) : null,
+            year: r.year != null ? Number(r.year) : year,
+          }));
+          // Chỉ key thuần → gắn nhãn Race
+          const normalized = mapped.map((s) =>
+            s.meeting_name
+              ? s
+              : {
+                  ...s,
+                  session_name: s.session_name || "Race",
+                  meeting_name: `Session ${s.session_key}`,
+                },
+          );
+          setApiSessions(normalized);
+          setSource("db");
+          setApiLoading(false);
+          // Vẫn thử OpenF1 để bổ sung FP nếu không lock
+        }
+      } catch {
+        /* fall through */
+      }
+
+      // 2) OpenF1 full calendar (khi không lock)
       try {
         const res = await fetch(
           `https://api.openf1.org/v1/sessions?year=${year}`,
         );
         const data = await res.json();
-        if (!cancelled && Array.isArray(data) && data.length > 0) {
+        if (cancelled) return;
+        if (isLockPayload(data)) {
+          setHint(
+            "OpenF1 đang khóa vì có session live — calendar lấy từ MySQL (chặng đã pump).",
+          );
+          setApiLoading(false);
+          return;
+        }
+        if (Array.isArray(data) && data.length > 0) {
           setApiSessions(
             data.map((r: Record<string, unknown>) => ({
               session_key: Number(r.session_key),
@@ -106,56 +175,17 @@ export function ArchiveView() {
             })),
           );
           setSource("openf1");
-          setApiLoading(false);
-          return;
+          setHint("");
         }
       } catch {
-        /* fall through */
-      }
-
-      // 2) Backend DB (only sessions that were pumped)
-      try {
-        const base =
-          import.meta.env.VITE_API_URL ||
-          "https://f1-dashboard-sbrl.onrender.com";
-        const res = await fetch(`${base}/api/sessions?year=${year}`);
-        const data = await res.json();
-        if (!cancelled && Array.isArray(data) && data.length > 0) {
-          setApiSessions(
-            data.map((r: Record<string, unknown>) => ({
-              session_key: Number(r.session_key),
-              session_name:
-                r.session_name != null ? String(r.session_name) : undefined,
-              session_type:
-                r.session_type != null ? String(r.session_type) : undefined,
-              date_start: r.date_start != null ? String(r.date_start) : null,
-              meeting_key:
-                r.meeting_key != null ? Number(r.meeting_key) : undefined,
-              meeting_name:
-                r.meeting_name != null ? String(r.meeting_name) : null,
-              circuit_short_name:
-                r.circuit_short_name != null
-                  ? String(r.circuit_short_name)
-                  : null,
-              country_name:
-                r.country_name != null ? String(r.country_name) : null,
-              year: r.year != null ? Number(r.year) : year,
-            })),
-          );
-          setSource("db");
-          setApiLoading(false);
-          return;
+        if (!cancelled) {
+          setHint("Không gọi được OpenF1 — dùng MySQL / local.");
         }
-      } catch {
-        /* empty */
       }
 
-      if (!cancelled) {
-        setApiSessions([]);
-        setSource("none");
-        setApiLoading(false);
-      }
+      if (!cancelled) setApiLoading(false);
     })();
+
     return () => {
       cancelled = true;
     };
@@ -182,8 +212,10 @@ export function ArchiveView() {
         map.set(mk, g);
       }
       g.sessions.push(s);
-      // keep earliest date as meeting date
-      if (s.date_start && (g.date === "—" || s.date_start.slice(0, 10) < g.date)) {
+      if (
+        s.date_start &&
+        (g.date === "—" || s.date_start.slice(0, 10) < g.date)
+      ) {
         g.date = s.date_start.slice(0, 10);
       }
     }
@@ -227,14 +259,20 @@ export function ArchiveView() {
           ))}
         <span className="ml-auto text-xs tracking-wider text-muted uppercase">
           {source === "openf1"
-            ? `OpenF1 · ${apiSessions.length} sessions · ${groups.length} GPs`
+            ? `OpenF1 · ${apiSessions.length} sessions`
             : source === "db"
-              ? `MySQL · ${apiSessions.length} pumped`
-              : year === 2026
-                ? "Loading / local"
-                : "Local standings"}
+              ? `MySQL · ${apiSessions.length} sessions`
+              : apiLoading
+                ? "Loading…"
+                : "Local"}
         </span>
       </div>
+
+      {hint && (
+        <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-200 ring-1 ring-amber-500/30">
+          {hint}
+        </p>
+      )}
 
       {leader && !useApiCalendar && (
         <div className="panel flex items-center gap-3 px-3 py-3">
@@ -251,13 +289,6 @@ export function ArchiveView() {
             </p>
           </div>
         </div>
-      )}
-
-      {useApiCalendar && (
-        <p className="px-1 text-xs tracking-wide text-subtle">
-          Calendar từ OpenF1: FP1 · FP2 · FP3 · Quali · Race (kể cả Baku).
-          Watch → xếp hạng đúng (DNF xuống cuối).
-        </p>
       )}
 
       <div className="flex gap-1">
@@ -303,9 +334,6 @@ export function ArchiveView() {
                         <Badge variant={isRace ? "live" : "muted"}>{label}</Badge>
                         <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-subtle">
                           key {s.session_key}
-                          {s.date_start
-                            ? ` · ${String(s.date_start).slice(0, 16).replace("T", " ")}`
-                            : ""}
                         </span>
                         <Button
                           size="sm"
@@ -328,9 +356,7 @@ export function ArchiveView() {
         {tab === "calendar" && !useApiCalendar && (
           <>
             {apiLoading && (
-              <p className="px-3 py-4 text-sm text-muted">
-                Loading OpenF1 calendar…
-              </p>
+              <p className="px-3 py-4 text-sm text-muted">Loading calendar…</p>
             )}
             <ol className="divide-y divide-border">
               {meetingsLocal.map((m) => {
