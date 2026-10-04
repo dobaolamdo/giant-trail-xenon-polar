@@ -4,6 +4,7 @@ import { usePitwall } from "@/lib/f1/store";
 import { TimingHeader } from "./header";
 import { pullLiveOf1 } from "@/lib/f1/live-of1";
 import { BAKU_RACE_KEY, bakuFallbackBoard } from "@/lib/f1/baku-fallback";
+import { mergeMeta, rosterMeta } from "@/lib/f1/drivers-roster";
 import {
   rankFromLaps,
   type RankDriverMeta,
@@ -51,7 +52,6 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** Purple = session-best sector up to this lap (client-side, like trigger). */
 function annotatePurple(
   laps: RawLap[],
   driver: number,
@@ -144,28 +144,26 @@ function rankedToUi(rows: RankedRow[]): LeaderboardRow[] {
   }));
 }
 
-function mapApiLeaderboard(rows: any[]): LeaderboardRow[] {
-  return rows.map((r, i) => ({
-    live_rank: Number(r.position ?? r.live_rank ?? i + 1),
-    driver_number: Number(r.driver_number),
-    full_name: String(r.full_name ?? r.name_acronym ?? `#${r.driver_number}`),
-    team_name: String(r.team_name ?? ""),
-    team_colour: colour(r.team_colour),
-    gap_to_leader:
-      r.gap_to_leader != null && r.gap_to_leader !== ""
-        ? Number(r.gap_to_leader)
-        : null,
-    gap_to_car_ahead: null,
-    last_lap:
-      r.lap_duration != null && r.lap_duration !== ""
-        ? Number(r.lap_duration)
-        : null,
-    status: r.dnf || r.status === "DNF" ? "DNF" : null,
-    position_change: 0,
-    code: r.name_acronym != null ? String(r.name_acronym) : r.code,
-    points: r.points != null ? Number(r.points) : undefined,
-    compound: "MEDIUM",
-  }));
+function enrichNames(
+  rows: LeaderboardRow[],
+  meta: Map<number, RankDriverMeta>,
+): LeaderboardRow[] {
+  return rows.map((r) => {
+    const m = meta.get(r.driver_number);
+    if (!m) return r;
+    const bare = !r.full_name || /^#\d+$/.test(r.full_name);
+    return {
+      ...r,
+      full_name: bare ? (m.full_name ?? r.full_name) : r.full_name,
+      team_name: r.team_name || m.team_name || "",
+      team_colour: colour(
+        r.team_colour && r.team_colour !== "888888"
+          ? r.team_colour
+          : m.team_colour,
+      ),
+      code: r.code || m.code,
+    };
+  });
 }
 
 export function PitwallShell() {
@@ -176,7 +174,9 @@ export function PitwallShell() {
   const [status, setStatus] = useState("");
   const [locked, setLocked] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [meta, setMeta] = useState<Map<number, RankDriverMeta>>(new Map());
+  const [meta, setMeta] = useState<Map<number, RankDriverMeta>>(() =>
+    rosterMeta(),
+  );
   const [rawLaps, setRawLaps] = useState<RawLap[]>([]);
   const [maxLap, setMaxLap] = useState(0);
   const [currentLap, setCurrentLap] = useState(1);
@@ -186,14 +186,9 @@ export function PitwallShell() {
   const [finalBoard, setFinalBoard] = useState<LeaderboardRow[] | null>(null);
   const [side, setSide] = useState<"driver" | "sql">("driver");
 
-  const playingRef = useRef(playing);
-  const speedRef = useRef(speed);
   const maxLapRef = useRef(maxLap);
-  playingRef.current = playing;
-  speedRef.current = speed;
   maxLapRef.current = maxLap;
 
-  // Load session data
   useEffect(() => {
     if (view !== "timing" || !isOpenF1Key(sessionKey)) return;
     let cancelled = false;
@@ -206,23 +201,23 @@ export function PitwallShell() {
       setCurrentLap(1);
       setMaxLap(0);
 
-      let m = new Map<number, RankDriverMeta>();
+      let m = rosterMeta();
       let laps: RawLap[] = [];
       let gotLb: LeaderboardRow[] | null = null;
 
-      // MySQL leaderboard (names + final order)
+      // 1) MySQL leaderboard — names + colours + final order
       try {
         const lbRes = await fetch(
           `${API}/api/leaderboard?session_key=${sessionKey}`,
         );
         if (lbRes.ok) {
           const lb = await lbRes.json();
-          if (Array.isArray(lb) && lb.length >= 5) {
-            gotLb = mapApiLeaderboard(lb);
+          if (Array.isArray(lb) && lb.length > 0) {
+            const fromLb = new Map<number, RankDriverMeta>();
             for (const r of lb) {
               const n = Number(r.driver_number);
               if (!n) continue;
-              m.set(n, {
+              fromLb.set(n, {
                 full_name: String(r.full_name ?? r.name_acronym ?? `#${n}`),
                 team_name: String(r.team_name ?? ""),
                 team_colour: colour(r.team_colour),
@@ -230,13 +225,41 @@ export function PitwallShell() {
                   r.name_acronym != null ? String(r.name_acronym) : undefined,
               });
             }
+            m = mergeMeta(m, fromLb);
+            gotLb = enrichNames(
+              lb.map((r: any, i: number) => ({
+                live_rank: Number(r.position ?? r.live_rank ?? i + 1),
+                driver_number: Number(r.driver_number),
+                full_name: String(
+                  r.full_name ?? r.name_acronym ?? `#${r.driver_number}`,
+                ),
+                team_name: String(r.team_name ?? ""),
+                team_colour: colour(r.team_colour),
+                gap_to_leader:
+                  r.gap_to_leader != null && r.gap_to_leader !== ""
+                    ? Number(r.gap_to_leader)
+                    : null,
+                gap_to_car_ahead: null,
+                last_lap:
+                  r.lap_duration != null && r.lap_duration !== ""
+                    ? Number(r.lap_duration)
+                    : null,
+                status: r.dnf || r.status === "DNF" ? "DNF" : null,
+                position_change: 0,
+                code:
+                  r.name_acronym != null ? String(r.name_acronym) : undefined,
+                points: r.points != null ? Number(r.points) : undefined,
+                compound: "MEDIUM" as const,
+              })),
+              m,
+            );
           }
         }
       } catch {
         /* */
       }
 
-      // MySQL laps
+      // 2) MySQL laps — for replay
       try {
         const lr = await fetch(
           `${API}/api/session-laps?session_key=${sessionKey}`,
@@ -262,13 +285,15 @@ export function PitwallShell() {
         /* */
       }
 
-      // OpenF1 if needed
-      if (laps.length === 0 || m.size === 0) {
+      // 3) OpenF1 if still empty
+      if (laps.length === 0) {
         try {
           const r = await pullLiveOf1(sessionKey);
           if (!cancelled) {
             setLocked(r.locked);
-            if (r.drivers && r.drivers.size > 0) m = r.drivers;
+            if (r.drivers && r.drivers.size > 0) {
+              m = mergeMeta(m, r.drivers);
+            }
             if (r.laps && r.laps.length > 0) {
               laps = r.laps.map((l) => ({
                 driver_number: l.driver_number,
@@ -280,7 +305,7 @@ export function PitwallShell() {
               }));
             }
             if (r.board && r.board.length > 0 && !gotLb) {
-              gotLb = rankedToUi(r.board);
+              gotLb = enrichNames(rankedToUi(r.board), m);
             }
             if (r.status) setStatus(r.status);
           }
@@ -289,13 +314,12 @@ export function PitwallShell() {
         }
       }
 
-      // Baku cache
       if (
         sessionKey === BAKU_RACE_KEY &&
         laps.length === 0 &&
         (!gotLb || gotLb.length === 0)
       ) {
-        gotLb = rankedToUi(bakuFallbackBoard());
+        gotLb = enrichNames(rankedToUi(bakuFallbackBoard()), m);
         setStatus("Baku 2026 · cached result");
       }
 
@@ -306,12 +330,16 @@ export function PitwallShell() {
       setRawLaps(laps);
       setMaxLap(mx);
       setFinalBoard(gotLb);
-      setCurrentLap(mx > 0 ? 1 : 0);
-      if (gotLb?.[0]) setSelected(gotLb[0].driver_number);
-      else if (m.size > 0) setSelected([...m.keys()][0]!);
+      setCurrentLap(mx > 0 ? Math.min(1, mx) : 0);
+      if (mx > 0) setCurrentLap(1);
+
+      const first =
+        gotLb?.[0]?.driver_number ??
+        (m.size > 0 ? [...m.keys()][0] : 0);
+      if (first) setSelected(first);
 
       if (laps.length > 0) {
-        setStatus(`Replay · ${laps.length} laps · up to L${mx}`);
+        setStatus(`Replay ready · ${laps.length} lap rows · L1→L${mx}`);
         setLocked(false);
       } else if (gotLb && gotLb.length > 0) {
         setStatus(`Result · ${gotLb.length} drivers`);
@@ -319,12 +347,7 @@ export function PitwallShell() {
         setStatus("No data for this session");
       }
 
-      setArchiveClock({
-        maxLap: mx,
-        lap: 1,
-        elapsed: 0,
-        duration: mx,
-      });
+      setArchiveClock({ maxLap: mx, lap: 1, elapsed: 0, duration: mx });
       setLoading(false);
     };
 
@@ -334,10 +357,8 @@ export function PitwallShell() {
     };
   }, [view, sessionKey, setArchiveClock]);
 
-  // Play loop — advance by lap
   useEffect(() => {
     if (!playing || maxLap <= 0) return;
-    // speed 16 ≈ ~1 lap / 0.4s
     const ms = Math.max(80, 3200 / speed);
     const id = setInterval(() => {
       setCurrentLap((c) => {
@@ -357,11 +378,14 @@ export function PitwallShell() {
 
   const board: LeaderboardRow[] = useMemo(() => {
     if (rawLaps.length > 0 && currentLap > 0) {
-      return rankedToUi(
-        rankFromLaps(rawLaps, meta, { maxLap: currentLap }),
+      return enrichNames(
+        rankedToUi(rankFromLaps(rawLaps, meta, { maxLap: currentLap })),
+        meta,
       );
     }
-    if (finalBoard && finalBoard.length > 0) return finalBoard;
+    if (finalBoard && finalBoard.length > 0) {
+      return enrichNames(finalBoard, meta);
+    }
     return [];
   }, [rawLaps, meta, currentLap, finalBoard]);
 
@@ -373,7 +397,9 @@ export function PitwallShell() {
       driver_number: selected,
       full_name: m?.full_name ?? driverRow?.full_name ?? `#${selected}`,
       team_name: m?.team_name ?? driverRow?.team_name ?? "",
-      team_colour: m?.team_colour ?? driverRow?.team_colour ?? "888888",
+      team_colour: colour(
+        m?.team_colour ?? driverRow?.team_colour ?? "888888",
+      ),
       name_acronym: m?.code ?? driverRow?.code,
       headshot_url: null,
     };
@@ -508,7 +534,8 @@ export function PitwallShell() {
                           ? JSON.stringify(
                               {
                                 driver: selected,
-                                lap: driverLaps[driverLaps.length - 1]?.lap_number,
+                                lap: driverLaps[driverLaps.length - 1]
+                                  ?.lap_number,
                                 s1: driverLaps[driverLaps.length - 1]
                                   ?.duration_sector_1,
                                 s2: driverLaps[driverLaps.length - 1]
@@ -531,7 +558,7 @@ export function PitwallShell() {
                           (l) =>
                             l.is_purple_s1 || l.is_purple_s2 || l.is_purple_s3,
                         )
-                          ? "Session-best sector flagged (client mirror of AFTER INSERT trigger)."
+                          ? "Session-best sector flagged (mirror of AFTER INSERT trigger)."
                           : "Play to advance — purple when sector beats session min."}
                       </p>
                     </div>
@@ -553,7 +580,7 @@ export function PitwallShell() {
             <p className="max-w-md text-sm text-muted">
               {loading
                 ? "Loading…"
-                : "Chưa có data. Archive → 2024 → Watch chặng đã pump, hoặc Live (Baku)."}
+                : "Chưa có data. Archive → 2024 → Watch chặng đã pump."}
             </p>
             <Button
               size="sm"
@@ -566,7 +593,6 @@ export function PitwallShell() {
         )}
       </div>
 
-      {/* Playback bar */}
       {canReplay && (
         <div className="sticky bottom-0 z-20 border-t border-border bg-surface px-3 py-2.5 sm:px-4">
           <div className="mb-2">
