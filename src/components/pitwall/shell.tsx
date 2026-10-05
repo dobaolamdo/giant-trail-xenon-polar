@@ -14,6 +14,7 @@ import { Leaderboard } from "./leaderboard";
 import { ArchiveView } from "./archive";
 import { SchemaView } from "./schema-view";
 import { DriverDetail } from "./driver-detail";
+import { SqlPanel } from "./sql-panel";
 import type {
   DriverListRow,
   LapHistoryRow,
@@ -211,7 +212,6 @@ export function PitwallShell() {
   const maxLapRef = useRef(0);
   maxLapRef.current = maxLap;
 
-  // ——— Load leaderboard + laps in parallel ———
   useEffect(() => {
     if (view !== "timing" || !isOpenF1Key(sessionKey)) return;
     let cancelled = false;
@@ -283,7 +283,6 @@ export function PitwallShell() {
 
       laps = parseLaps(lapsData);
 
-      // OpenF1 only if MySQL empty
       if (laps.length === 0) {
         try {
           const r = await pullLiveOf1(sessionKey);
@@ -325,8 +324,7 @@ export function PitwallShell() {
       setCurrentLap(mx > 0 ? 1 : 0);
 
       const firstDriver =
-        gotLb?.[0]?.driver_number ??
-        (laps[0]?.driver_number || 1);
+        gotLb?.[0]?.driver_number ?? (laps[0]?.driver_number || 1);
       setSelected(firstDriver);
 
       if (laps.length > 0 && mx > 0) {
@@ -351,7 +349,6 @@ export function PitwallShell() {
     };
   }, [view, sessionKey, setArchiveClock]);
 
-  // Play ticker
   useEffect(() => {
     if (!playing || maxLap <= 0) return;
     const ms = Math.max(60, 2800 / speed);
@@ -377,7 +374,6 @@ export function PitwallShell() {
 
   const board: LeaderboardRow[] = useMemo(() => {
     if (canReplay && currentLap > 0) {
-      // Live-style tower while replaying — no PTS column
       return enrichNames(
         rankedToUi(rankFromLaps(rawLaps, meta, { maxLap: currentLap })),
         meta,
@@ -474,7 +470,6 @@ export function PitwallShell() {
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2 lg:flex-row lg:px-4">
         {board.length > 0 ? (
           <>
-            {/* Leaderboard */}
             <div className="flex min-h-0 min-w-0 flex-[1.4] flex-col">
               <Leaderboard
                 rows={board}
@@ -487,7 +482,6 @@ export function PitwallShell() {
               />
             </div>
 
-            {/* Driver / SQL panel — always visible when board exists */}
             <div className="flex h-[min(42vh,360px)] w-full shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-surface lg:h-auto lg:min-h-0 lg:w-[380px] lg:max-w-[40%]">
               <div className="flex gap-1 border-b border-border p-2">
                 <Button
@@ -515,55 +509,15 @@ export function PitwallShell() {
                     laps={driverLaps}
                   />
                 ) : (
-                  <div className="h-full space-y-3 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed text-muted">
-                    <div>
-                      <p className="mb-1 text-xs tracking-widest text-subtle uppercase">
-                        Raw ingest
-                      </p>
-                      <pre className="overflow-x-auto rounded bg-surface-2 p-2 text-fg">
-                        {driverLaps.length > 0
-                          ? JSON.stringify(
-                              {
-                                driver: selected,
-                                lap: driverLaps[driverLaps.length - 1]
-                                  ?.lap_number,
-                                s1: driverLaps[driverLaps.length - 1]
-                                  ?.duration_sector_1,
-                                s2: driverLaps[driverLaps.length - 1]
-                                  ?.duration_sector_2,
-                                s3: driverLaps[driverLaps.length - 1]
-                                  ?.duration_sector_3,
-                              },
-                              null,
-                              2,
-                            )
-                          : canReplay
-                            ? "Play để nạp sector…"
-                            : "Không có lap rows trong DB"}
-                      </pre>
-                    </div>
-                    <div>
-                      <p className="mb-1 text-xs tracking-widest text-sector-purple uppercase">
-                        Trigger · purple sector
-                      </p>
-                      <p className="text-fg">
-                        {driverLaps.some(
-                          (l) =>
-                            l.is_purple_s1 || l.is_purple_s2 || l.is_purple_s3,
-                        )
-                          ? "🟣 Session-best sector (mirror AFTER INSERT)."
-                          : "Bấm Play — sector tím khi phá best session."}
-                      </p>
-                    </div>
-                    <div>
-                      <p className="mb-1 text-xs tracking-widest text-subtle uppercase">
-                        Derived
-                      </p>
-                      <pre className="rounded bg-surface-2 p-2 text-fg">
-                        {`CALL Get_Live_Leaderboard(${sessionKey})`}
-                      </pre>
-                    </div>
-                  </div>
+                  <SqlPanel
+                    sessionKey={sessionKey}
+                    selected={selected}
+                    currentLap={currentLap}
+                    maxLap={maxLap}
+                    driverLaps={driverLaps}
+                    board={board}
+                    canReplay={canReplay}
+                  />
                 )}
               </div>
             </div>
@@ -586,7 +540,6 @@ export function PitwallShell() {
         )}
       </div>
 
-      {/* Playback — luôn hiện khi có laps */}
       {canReplay && (
         <div className="sticky bottom-0 z-30 border-t border-border bg-surface/95 px-3 py-2.5 backdrop-blur sm:px-4">
           <div className="mb-2">
