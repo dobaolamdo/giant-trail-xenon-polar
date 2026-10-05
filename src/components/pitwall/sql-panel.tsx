@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import type { LapHistoryRow, LeaderboardRow } from "@/lib/f1/types";
 import { cn } from "@/lib/utils";
 
@@ -28,13 +28,21 @@ export function SqlPanel({
     const events: string[] = [];
     for (const l of driverLaps) {
       if (l.is_purple_s1)
-        events.push(`L${l.lap_number} · #${selected} · S1 ${l.duration_sector_1.toFixed(3)}s → is_purple_s1=1`);
+        events.push(
+          `L${l.lap_number} · #${selected} · S1 ${l.duration_sector_1.toFixed(3)}s → is_purple_s1=1`,
+        );
       if (l.is_purple_s2)
-        events.push(`L${l.lap_number} · #${selected} · S2 ${l.duration_sector_2.toFixed(3)}s → is_purple_s2=1`);
+        events.push(
+          `L${l.lap_number} · #${selected} · S2 ${l.duration_sector_2.toFixed(3)}s → is_purple_s2=1`,
+        );
       if (l.is_purple_s3)
-        events.push(`L${l.lap_number} · #${selected} · S3 ${l.duration_sector_3.toFixed(3)}s → is_purple_s3=1`);
+        events.push(
+          `L${l.lap_number} · #${selected} · S3 ${l.duration_sector_3.toFixed(3)}s → is_purple_s3=1`,
+        );
       if (l.is_personal_best)
-        events.push(`L${l.lap_number} · #${selected} · LAP ${l.lap_duration.toFixed(3)}s → personal best`);
+        events.push(
+          `L${l.lap_number} · #${selected} · LAP ${l.lap_duration.toFixed(3)}s → personal best`,
+        );
     }
     return events.slice(-8);
   }, [driverLaps, selected]);
@@ -43,7 +51,6 @@ export function SqlPanel({
 
   return (
     <div className="h-full space-y-3 overflow-y-auto p-3 text-[11px] leading-relaxed">
-      {/* Pipeline */}
       <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10px]">
         <Pipe active>RAW INSERT</Pipe>
         <span className="text-muted">→</span>
@@ -56,7 +63,7 @@ export function SqlPanel({
         <Pipe active={board.length > 0}>UI</Pipe>
       </div>
 
-      <p className="text-xs text-subtle">
+      <p className="text-xs text-muted">
         Session <span className="font-mono text-fg">{sessionKey}</span>
         {canReplay ? (
           <>
@@ -65,11 +72,10 @@ export function SqlPanel({
               L{currentLap}/{maxLap}
             </span>
           </>
-        ) : null{" "}
+        ) : null}{" "}
         — Play để thấy trigger fire.
       </p>
 
-      {/* 1 Raw */}
       <Section title="1 · RAW ingest (OpenF1 → laps)">
         <pre className="overflow-x-auto rounded bg-surface-2 p-2 font-mono text-fg">
           {last
@@ -99,7 +105,6 @@ VALUES (${sessionKey}, ${selected}, ${last.lap_number},
         )}
       </Section>
 
-      {/* 2 Trigger */}
       <Section title="2 · TRIGGER (AFTER INSERT on laps)">
         <pre className="overflow-x-auto rounded bg-surface-2 p-2 font-mono text-[10px] text-fg">
           {`CREATE TRIGGER trg_laps_session_best
@@ -117,7 +122,7 @@ BEGIN
 END;`}
         </pre>
         <div className="mt-2">
-          <p className="mb-1 text-[10px] tracking-widest text-sector-purple uppercase">
+          <p className="mb-1 text-[10px] tracking-widest text-violet-300 uppercase">
             Trigger log (session-best)
           </p>
           {purpleLog.length === 0 ? (
@@ -129,7 +134,7 @@ END;`}
               {purpleLog.map((e, i) => (
                 <li
                   key={i}
-                  className="rounded bg-violet-500/10 px-2 py-1 font-mono text-sector-purple ring-1 ring-violet-500/30"
+                  className="rounded bg-violet-500/10 px-2 py-1 font-mono text-violet-300 ring-1 ring-violet-500/30"
                 >
                   🟣 {e}
                 </li>
@@ -139,7 +144,6 @@ END;`}
         </div>
       </Section>
 
-      {/* 3 Procedure */}
       <Section title="3 · PROCEDURE → leaderboard">
         <pre className="overflow-x-auto rounded bg-surface-2 p-2 font-mono text-[10px] text-fg">
           {`CALL Get_Live_Leaderboard(${sessionKey});
@@ -148,7 +152,7 @@ END;`}
         </pre>
         {top3.length > 0 && (
           <div className="mt-2 space-y-1">
-            <p className="text-[10px] tracking-widest text-subtle uppercase">
+            <p className="text-[10px] tracking-widest text-muted uppercase">
               Derived top 3 @ L{currentLap || "—"}
             </p>
             {top3.map((r) => (
@@ -173,8 +177,9 @@ END;`}
         )}
       </Section>
 
-      <p className="border-t border-border pt-2 text-[10px] text-subtle">
-        Tab Schema: ERD · full trigger/procedure DDL. Môn CSDL: RAW nghèo → TRIGGER gắn cờ → PROCEDURE tính xếp hạng.
+      <p className="border-t border-border pt-2 text-[10px] text-muted">
+        Tab Schema: ERD · full trigger/procedure DDL. Môn CSDL: RAW nghèo →
+        TRIGGER gắn cờ → PROCEDURE tính xếp hạng.
       </p>
     </div>
   );
@@ -185,7 +190,7 @@ function Section({
   children,
 }: {
   title: string;
-  children: React.ReactNode;
+  children: ReactNode;
 }) {
   return (
     <div>
@@ -211,10 +216,10 @@ function Pipe({
       className={cn(
         "rounded px-1.5 py-0.5 tracking-wide",
         purple && active
-          ? "bg-violet-500/20 text-sector-purple ring-1 ring-violet-500/40"
+          ? "bg-violet-500/20 text-violet-300 ring-1 ring-violet-500/40"
           : active
             ? "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/30"
-            : "bg-surface-2 text-subtle",
+            : "bg-surface-2 text-muted",
       )}
     >
       {children}
