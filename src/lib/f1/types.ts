@@ -70,79 +70,15 @@ export type DriverListRow = {
   full_name: string;
   team_name: string;
   team_colour: string;
-  headshot_url: string;
-  code: string;
+  headshot_url?: string | null;
+  code?: string;
+  name_acronym?: string;
 };
 
 export type SessionSnapshotCar = {
   driver_number: number;
   cumulative: number;
   last_lap: number | null;
-  compound: string;
-  pit_this_lap: boolean;
-  retired: boolean;
-  sc_this_lap: boolean;
-  sectors: [number, number, number] | null;
-};
-
-export type SessionSnapshot = {
-  completed_laps: number;
-  time: number;
-  cars: SessionSnapshotCar[];
-};
-
-export type SeasonRow = {
-  year: number;
-  name: string;
-  status: "complete" | "in_progress";
-  meeting_count: number;
-};
-
-export type MeetingRow = {
-  year: number;
-  round: number;
-  meeting_key: number;
-  session_key: number;
-  meeting_name: string;
-  circuit_short_name: string;
-  country_name: string;
-  date_start: string;
-  status: "live" | "complete" | "upcoming";
-  winner_name: string | null;
-  winner_number: number | null;
-  winner_team: string | null;
-};
-
-export type RaceResultRow = {
-  position: number;
-  driver_number: number;
-  full_name: string;
-  team_name: string;
-  team_colour: string;
-  code: string;
-  gap_to_leader: number | null;
-  points: number;
-  status: "Classified" | "DNF";
-  laps: number;
-  fastest_lap: boolean;
-};
-
-export type DriverStandingRow = {
-  position: number;
-  driver_number: number;
-  full_name: string;
-  team_name: string;
-  team_colour: string;
-  code: string;
-  points: number;
-  wins: number;
-  podiums: number;
-};
-
-export type ConstructorStandingRow = {
-  position: number;
-  team_name: string;
-  team_colour: string;
-  points: number;
-  wins: number;
+  status?: string | null;
+  compound?: string;
 };
