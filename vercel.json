@@ -1,3 +1,11 @@
 {
-  "buildCommand": "npm install && npm run build"
+  "buildCommand": "npm install --legacy-peer-deps && npm run build",
+  "env": {
+    "DANGEROUSLY_DEPLOY_VULNERABLE_TANSTACK_START_XSS": "1"
+  },
+  "build": {
+    "env": {
+      "DANGEROUSLY_DEPLOY_VULNERABLE_TANSTACK_START_XSS": "1"
+    }
+  }
 }
