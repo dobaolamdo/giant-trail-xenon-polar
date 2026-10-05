@@ -1,0 +1,76 @@
+name: Pump all races OpenF1 → MySQL
+
+on:
+  workflow_dispatch:
+    inputs:
+      year:
+        description: "Year to pump (2023 | 2024 | 2025 | all)"
+        required: true
+        default: "2024"
+        type: choice
+        options:
+          - "2024"
+          - "2023"
+          - "2025"
+          - "all"
+
+jobs:
+  pump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Resolve session keys
+        id: keys
+        run: |
+          YEAR="${{ inputs.year }}"
+          KEYS=""
+          if [ "$YEAR" = "all" ] || [ "$YEAR" = "2023" ]; then
+            KEYS="$KEYS 7953 7779 7787 9070 9078 9086 9094 9102 9110 9118 9126 9133 9141 9149 9157 9165 9173 9221 9213 9181 9205 9189 9197"
+          fi
+          if [ "$YEAR" = "all" ] || [ "$YEAR" = "2024" ]; then
+            KEYS="$KEYS 9472 9480 9488 9496 9673 9507 9515 9523 9531 9539 9550 9558 9566 9574 9582 9590 9598 9606 9617 9625 9636 9644 9655 9662"
+          fi
+          if [ "$YEAR" = "all" ] || [ "$YEAR" = "2025" ]; then
+            KEYS="$KEYS 9693 9998 10006 10014 10022 10033 9987 9979 9971 9963 9955 9947 9939 9928 9920 9912 9904 9896 9888 9877 9869 9858 9850 9839"
+          fi
+          echo "keys=$KEYS" >> "$GITHUB_OUTPUT"
+          echo "Will pump: $KEYS"
+
+      - name: Pump each race into MySQL
+        env:
+          API: ${{ secrets.PITWALL_API_URL }}
+          SECRET: ${{ secrets.PUMP_SECRET }}
+        run: |
+          set -e
+          if [ -z "$API" ] || [ -z "$SECRET" ]; then
+            echo "Missing secrets PITWALL_API_URL or PUMP_SECRET"
+            exit 1
+          fi
+          API="${API%/}"
+          OK=0
+          FAIL=0
+          for KEY in ${{ steps.keys.outputs.keys }}; do
+            echo "======== session_key=$KEY ========"
+            # wake Render (cold start)
+            curl -sS -m 30 "$API/health" >/dev/null || true
+            sleep 2
+            CODE=$(curl -sS -m 300 -o /tmp/pump.json -w "%{http_code}" \
+              "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
+            echo "HTTP $CODE"
+            head -c 400 /tmp/pump.json; echo
+            if [ "$CODE" = "200" ]; then
+              OK=$((OK+1))
+            else
+              FAIL=$((FAIL+1))
+              echo "retry once after wake…"
+              sleep 8
+              CODE=$(curl -sS -m 300 -o /tmp/pump.json -w "%{http_code}" \
+                "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
+              echo "retry HTTP $CODE"
+              head -c 200 /tmp/pump.json; echo
+              if [ "$CODE" = "200" ]; then OK=$((OK+1)); FAIL=$((FAIL-1)); fi
+            fi
+            sleep 3
+          done
+          echo "DONE ok=$OK fail=$FAIL"
+          if [ "$FAIL" -gt 5 ]; then exit 1; fi
