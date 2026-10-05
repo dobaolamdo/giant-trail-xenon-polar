@@ -52,6 +52,18 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+async function fetchJson(url: string, ms = 45000): Promise<unknown> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 function annotatePurple(
   laps: RawLap[],
   driver: number,
@@ -67,12 +79,10 @@ function annotatePurple(
       (a, b) =>
         a.lap_number - b.lap_number || a.driver_number - b.driver_number,
     );
-
   const purpleAt = new Map<
     string,
     { s1: boolean; s2: boolean; s3: boolean; pb: boolean }
   >();
-
   for (const l of chron) {
     const s1 = num(l.duration_sector_1);
     const s2 = num(l.duration_sector_2);
@@ -105,7 +115,6 @@ function annotatePurple(
       pb,
     });
   }
-
   return chron
     .filter((l) => l.driver_number === driver)
     .map((l) => {
@@ -166,13 +175,26 @@ function enrichNames(
   });
 }
 
+function parseLaps(data: unknown): RawLap[] {
+  if (!Array.isArray(data)) return [];
+  return data
+    .filter((r: any) => r?.driver_number != null && r?.lap_number != null)
+    .map((r: any) => ({
+      driver_number: Number(r.driver_number),
+      lap_number: Number(r.lap_number),
+      lap_duration: num(r.lap_duration),
+      duration_sector_1: num(r.duration_sector_1),
+      duration_sector_2: num(r.duration_sector_2),
+      duration_sector_3: num(r.duration_sector_3),
+    }));
+}
+
 export function PitwallShell() {
   const sessionKey = usePitwall((s) => s.sessionKey);
   const view = usePitwall((s) => s.view);
   const setArchiveClock = usePitwall((s) => s.setArchiveClock);
 
   const [status, setStatus] = useState("");
-  const [locked, setLocked] = useState(false);
   const [loading, setLoading] = useState(false);
   const [meta, setMeta] = useState<Map<number, RankDriverMeta>>(() =>
     rosterMeta(),
@@ -182,145 +204,115 @@ export function PitwallShell() {
   const [currentLap, setCurrentLap] = useState(1);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(16);
-  const [selected, setSelected] = useState(0);
+  const [selected, setSelected] = useState(1);
   const [finalBoard, setFinalBoard] = useState<LeaderboardRow[] | null>(null);
   const [side, setSide] = useState<"driver" | "sql">("driver");
 
-  const maxLapRef = useRef(maxLap);
+  const maxLapRef = useRef(0);
   maxLapRef.current = maxLap;
 
+  // ——— Load leaderboard + laps in parallel ———
   useEffect(() => {
     if (view !== "timing" || !isOpenF1Key(sessionKey)) return;
     let cancelled = false;
 
-    const load = async () => {
+    (async () => {
       setLoading(true);
       setPlaying(false);
       setRawLaps([]);
       setFinalBoard(null);
-      setCurrentLap(1);
       setMaxLap(0);
+      setCurrentLap(1);
+      setStatus("Loading MySQL…");
 
       let m = rosterMeta();
       let laps: RawLap[] = [];
       let gotLb: LeaderboardRow[] | null = null;
 
-      // 1) MySQL leaderboard — names + colours + final order
-      try {
-        const lbRes = await fetch(
-          `${API}/api/leaderboard?session_key=${sessionKey}`,
-        );
-        if (lbRes.ok) {
-          const lb = await lbRes.json();
-          if (Array.isArray(lb) && lb.length > 0) {
-            const fromLb = new Map<number, RankDriverMeta>();
-            for (const r of lb) {
-              const n = Number(r.driver_number);
-              if (!n) continue;
-              fromLb.set(n, {
-                full_name: String(r.full_name ?? r.name_acronym ?? `#${n}`),
-                team_name: String(r.team_name ?? ""),
-                team_colour: colour(r.team_colour),
-                code:
-                  r.name_acronym != null ? String(r.name_acronym) : undefined,
-              });
-            }
-            m = mergeMeta(m, fromLb);
-            gotLb = enrichNames(
-              lb.map((r: any, i: number) => ({
-                live_rank: Number(r.position ?? r.live_rank ?? i + 1),
-                driver_number: Number(r.driver_number),
-                full_name: String(
-                  r.full_name ?? r.name_acronym ?? `#${r.driver_number}`,
-                ),
-                team_name: String(r.team_name ?? ""),
-                team_colour: colour(r.team_colour),
-                gap_to_leader:
-                  r.gap_to_leader != null && r.gap_to_leader !== ""
-                    ? Number(r.gap_to_leader)
-                    : null,
-                gap_to_car_ahead: null,
-                last_lap:
-                  r.lap_duration != null && r.lap_duration !== ""
-                    ? Number(r.lap_duration)
-                    : null,
-                status: r.dnf || r.status === "DNF" ? "DNF" : null,
-                position_change: 0,
-                code:
-                  r.name_acronym != null ? String(r.name_acronym) : undefined,
-                points: r.points != null ? Number(r.points) : undefined,
-                compound: "MEDIUM" as const,
-              })),
-              m,
-            );
-          }
+      const lbP = fetchJson(
+        `${API}/api/leaderboard?session_key=${sessionKey}`,
+      ).catch(() => null);
+      const lapsP = fetchJson(
+        `${API}/api/session-laps?session_key=${sessionKey}`,
+        60000,
+      ).catch(() => null);
+
+      const [lbData, lapsData] = await Promise.all([lbP, lapsP]);
+      if (cancelled) return;
+
+      if (Array.isArray(lbData) && lbData.length > 0) {
+        const fromLb = new Map<number, RankDriverMeta>();
+        for (const r of lbData as any[]) {
+          const n = Number(r.driver_number);
+          if (!n) continue;
+          fromLb.set(n, {
+            full_name: String(r.full_name ?? r.name_acronym ?? `#${n}`),
+            team_name: String(r.team_name ?? ""),
+            team_colour: colour(r.team_colour),
+            code: r.name_acronym != null ? String(r.name_acronym) : undefined,
+          });
         }
-      } catch {
-        /* */
+        m = mergeMeta(m, fromLb);
+        gotLb = enrichNames(
+          (lbData as any[]).map((r, i) => ({
+            live_rank: Number(r.position ?? r.live_rank ?? i + 1),
+            driver_number: Number(r.driver_number),
+            full_name: String(
+              r.full_name ?? r.name_acronym ?? `#${r.driver_number}`,
+            ),
+            team_name: String(r.team_name ?? ""),
+            team_colour: colour(r.team_colour),
+            gap_to_leader:
+              r.gap_to_leader != null && r.gap_to_leader !== ""
+                ? Number(r.gap_to_leader)
+                : null,
+            gap_to_car_ahead: null,
+            last_lap:
+              r.lap_duration != null && r.lap_duration !== ""
+                ? Number(r.lap_duration)
+                : null,
+            status: r.dnf || r.status === "DNF" ? "DNF" : null,
+            position_change: 0,
+            code: r.name_acronym != null ? String(r.name_acronym) : undefined,
+            points: r.points != null ? Number(r.points) : undefined,
+            compound: "MEDIUM" as const,
+          })),
+          m,
+        );
       }
 
-      // 2) MySQL laps — for replay
-      try {
-        const lr = await fetch(
-          `${API}/api/session-laps?session_key=${sessionKey}`,
-        );
-        if (lr.ok) {
-          const data = await lr.json();
-          if (Array.isArray(data) && data.length > 0) {
-            laps = data
-              .filter(
-                (r: any) => r.driver_number != null && r.lap_number != null,
-              )
-              .map((r: any) => ({
-                driver_number: Number(r.driver_number),
-                lap_number: Number(r.lap_number),
-                lap_duration: num(r.lap_duration),
-                duration_sector_1: num(r.duration_sector_1),
-                duration_sector_2: num(r.duration_sector_2),
-                duration_sector_3: num(r.duration_sector_3),
-              }));
-          }
-        }
-      } catch {
-        /* */
-      }
+      laps = parseLaps(lapsData);
 
-      // 3) OpenF1 if still empty
+      // OpenF1 only if MySQL empty
       if (laps.length === 0) {
         try {
           const r = await pullLiveOf1(sessionKey);
-          if (!cancelled) {
-            setLocked(r.locked);
-            if (r.drivers && r.drivers.size > 0) {
-              m = mergeMeta(m, r.drivers);
-            }
-            if (r.laps && r.laps.length > 0) {
-              laps = r.laps.map((l) => ({
-                driver_number: l.driver_number,
-                lap_number: l.lap_number,
-                lap_duration: num(l.lap_duration),
-                duration_sector_1: num(l.duration_sector_1),
-                duration_sector_2: num(l.duration_sector_2),
-                duration_sector_3: num(l.duration_sector_3),
-              }));
-            }
-            if (r.board && r.board.length > 0 && !gotLb) {
-              gotLb = enrichNames(rankedToUi(r.board), m);
-            }
-            if (r.status) setStatus(r.status);
+          if (cancelled) return;
+          if (r.drivers?.size) m = mergeMeta(m, r.drivers);
+          if (r.laps?.length) {
+            laps = r.laps.map((l) => ({
+              driver_number: l.driver_number,
+              lap_number: l.lap_number,
+              lap_duration: num(l.lap_duration),
+              duration_sector_1: num(l.duration_sector_1),
+              duration_sector_2: num(l.duration_sector_2),
+              duration_sector_3: num(l.duration_sector_3),
+            }));
+          }
+          if (r.board?.length && !gotLb) {
+            gotLb = enrichNames(rankedToUi(r.board), m);
           }
         } catch {
-          if (!cancelled) setStatus("OpenF1 unavailable");
+          /* */
         }
       }
 
       if (
         sessionKey === BAKU_RACE_KEY &&
         laps.length === 0 &&
-        (!gotLb || gotLb.length === 0)
+        !gotLb?.length
       ) {
         gotLb = enrichNames(rankedToUi(bakuFallbackBoard()), m);
-        setStatus("Baku 2026 · cached result");
       }
 
       if (cancelled) return;
@@ -330,37 +322,40 @@ export function PitwallShell() {
       setRawLaps(laps);
       setMaxLap(mx);
       setFinalBoard(gotLb);
-      setCurrentLap(mx > 0 ? Math.min(1, mx) : 0);
-      if (mx > 0) setCurrentLap(1);
+      setCurrentLap(mx > 0 ? 1 : 0);
 
-      const first =
+      const firstDriver =
         gotLb?.[0]?.driver_number ??
-        (m.size > 0 ? [...m.keys()][0] : 0);
-      if (first) setSelected(first);
+        (laps[0]?.driver_number || 1);
+      setSelected(firstDriver);
 
-      if (laps.length > 0) {
-        setStatus(`Replay ready · ${laps.length} lap rows · L1→L${mx}`);
-        setLocked(false);
-      } else if (gotLb && gotLb.length > 0) {
-        setStatus(`Result · ${gotLb.length} drivers`);
+      if (laps.length > 0 && mx > 0) {
+        setStatus(`▶ Replay · ${laps.length} rows · L1–${mx} · bấm Play`);
+      } else if (gotLb?.length) {
+        setStatus(`Kết quả cuối · ${gotLb.length} xe (không có lap replay)`);
       } else {
-        setStatus("No data for this session");
+        setStatus("Không có data — Archive chọn chặng đã pump");
       }
 
-      setArchiveClock({ maxLap: mx, lap: 1, elapsed: 0, duration: mx });
+      setArchiveClock({
+        maxLap: mx || gotLb?.length || 0,
+        lap: mx > 0 ? 1 : 0,
+        elapsed: 0,
+        duration: mx,
+      });
       setLoading(false);
-    };
+    })();
 
-    load();
     return () => {
       cancelled = true;
     };
   }, [view, sessionKey, setArchiveClock]);
 
+  // Play ticker
   useEffect(() => {
     if (!playing || maxLap <= 0) return;
-    const ms = Math.max(80, 3200 / speed);
-    const id = setInterval(() => {
+    const ms = Math.max(60, 2800 / speed);
+    const id = window.setInterval(() => {
       setCurrentLap((c) => {
         if (c >= maxLapRef.current) {
           setPlaying(false);
@@ -373,60 +368,62 @@ export function PitwallShell() {
   }, [playing, speed, maxLap]);
 
   useEffect(() => {
-    setArchiveClock({ lap: currentLap, maxLap, elapsed: currentLap });
+    if (maxLap > 0) {
+      setArchiveClock({ lap: currentLap, maxLap, elapsed: currentLap });
+    }
   }, [currentLap, maxLap, setArchiveClock]);
 
+  const canReplay = rawLaps.length > 0 && maxLap > 0;
+
   const board: LeaderboardRow[] = useMemo(() => {
-    if (rawLaps.length > 0 && currentLap > 0) {
+    if (canReplay && currentLap > 0) {
+      // Live-style tower while replaying — no PTS column
       return enrichNames(
         rankedToUi(rankFromLaps(rawLaps, meta, { maxLap: currentLap })),
         meta,
       );
     }
-    if (finalBoard && finalBoard.length > 0) {
-      return enrichNames(finalBoard, meta);
-    }
+    if (finalBoard?.length) return enrichNames(finalBoard, meta);
     return [];
-  }, [rawLaps, meta, currentLap, finalBoard]);
+  }, [canReplay, rawLaps, meta, currentLap, finalBoard]);
 
   const driverRow = board.find((b) => b.driver_number === selected);
   const driverList: DriverListRow | undefined = useMemo(() => {
-    const m = meta.get(selected);
-    if (!m && !driverRow) return undefined;
+    const md = meta.get(selected);
+    if (!md && !driverRow) return undefined;
     return {
       driver_number: selected,
-      full_name: m?.full_name ?? driverRow?.full_name ?? `#${selected}`,
-      team_name: m?.team_name ?? driverRow?.team_name ?? "",
-      team_colour: colour(
-        m?.team_colour ?? driverRow?.team_colour ?? "888888",
-      ),
-      name_acronym: m?.code ?? driverRow?.code,
+      full_name: md?.full_name ?? driverRow?.full_name ?? `#${selected}`,
+      team_name: md?.team_name ?? driverRow?.team_name ?? "",
+      team_colour: colour(md?.team_colour ?? driverRow?.team_colour ?? "888888"),
+      name_acronym: md?.code ?? driverRow?.code,
       headshot_url: null,
     };
   }, [meta, selected, driverRow]);
 
   const driverLaps = useMemo(
     () =>
-      rawLaps.length > 0
+      canReplay
         ? annotatePurple(rawLaps, selected, currentLap || maxLap)
         : [],
-    [rawLaps, selected, currentLap, maxLap],
+    [canReplay, rawLaps, selected, currentLap, maxLap],
   );
 
   const togglePlay = useCallback(() => {
-    if (maxLap <= 0) return;
+    if (!canReplay) return;
     if (currentLap >= maxLap) {
       setCurrentLap(1);
       setPlaying(true);
       return;
     }
     setPlaying((p) => !p);
-  }, [maxLap, currentLap]);
+  }, [canReplay, currentLap, maxLap]);
 
   const restart = useCallback(() => {
+    if (!canReplay) return;
     setCurrentLap(1);
     setPlaying(true);
-  }, []);
+  }, [canReplay]);
 
   if (view === "standings") {
     return (
@@ -436,7 +433,6 @@ export function PitwallShell() {
       </div>
     );
   }
-
   if (view === "schema") {
     return (
       <div className="flex min-h-dvh flex-col">
@@ -446,8 +442,6 @@ export function PitwallShell() {
     );
   }
 
-  const canReplay = rawLaps.length > 0 && maxLap > 0;
-
   return (
     <div className="flex min-h-dvh flex-col">
       <TimingHeader />
@@ -456,19 +450,19 @@ export function PitwallShell() {
         <div
           className={cn(
             "mx-3 mt-1 flex items-center gap-2 rounded-md px-3 py-1.5 text-xs sm:mx-4",
-            locked
-              ? "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/40"
-              : "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/40",
+            canReplay
+              ? "bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-500/40"
+              : "bg-amber-500/15 text-amber-200 ring-1 ring-amber-500/40",
           )}
         >
           <span
             className={cn(
               "size-1.5 rounded-full",
-              locked ? "bg-amber-400" : "bg-emerald-400 live-dot",
+              canReplay ? "bg-emerald-400 live-dot" : "bg-amber-400",
             )}
           />
           <span className="font-mono tracking-wide">
-            {status || (loading ? "Loading…" : `Session ${sessionKey}`)}
+            {loading ? "Loading…" : status || `Session ${sessionKey}`}
           </span>
           <span className="ml-auto text-[10px] uppercase opacity-70">
             key {sessionKey}
@@ -477,10 +471,11 @@ export function PitwallShell() {
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 px-3 py-2 sm:flex-row sm:px-4">
+      <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden px-3 py-2 lg:flex-row lg:px-4">
         {board.length > 0 ? (
           <>
-            <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+            {/* Leaderboard */}
+            <div className="flex min-h-0 min-w-0 flex-[1.4] flex-col">
               <Leaderboard
                 rows={board}
                 selected={selected}
@@ -488,15 +483,12 @@ export function PitwallShell() {
                   setSelected(n);
                   setSide("driver");
                 }}
-                mode={
-                  !canReplay && board.some((b) => b.points != null)
-                    ? "result"
-                    : "live"
-                }
+                mode={canReplay ? "live" : "result"}
               />
             </div>
 
-            <div className="flex min-h-[220px] w-full flex-col overflow-hidden rounded-lg border border-border bg-surface sm:min-h-0 sm:w-[min(100%,380px)]">
+            {/* Driver / SQL panel — always visible when board exists */}
+            <div className="flex h-[min(42vh,360px)] w-full shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-surface lg:h-auto lg:min-h-0 lg:w-[380px] lg:max-w-[40%]">
               <div className="flex gap-1 border-b border-border p-2">
                 <Button
                   size="sm"
@@ -516,20 +508,19 @@ export function PitwallShell() {
                 </Button>
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
-                {side === "driver" && (
+                {side === "driver" ? (
                   <DriverDetail
                     driver={driverList}
                     row={driverRow}
                     laps={driverLaps}
                   />
-                )}
-                {side === "sql" && (
+                ) : (
                   <div className="h-full space-y-3 overflow-y-auto p-3 font-mono text-[11px] leading-relaxed text-muted">
                     <div>
                       <p className="mb-1 text-xs tracking-widest text-subtle uppercase">
                         Raw ingest
                       </p>
-                      <pre className="rounded bg-surface-2 p-2 text-fg">
+                      <pre className="overflow-x-auto rounded bg-surface-2 p-2 text-fg">
                         {driverLaps.length > 0
                           ? JSON.stringify(
                               {
@@ -546,7 +537,9 @@ export function PitwallShell() {
                               null,
                               2,
                             )
-                          : "— no lap —"}
+                          : canReplay
+                            ? "Play để nạp sector…"
+                            : "Không có lap rows trong DB"}
                       </pre>
                     </div>
                     <div>
@@ -558,16 +551,16 @@ export function PitwallShell() {
                           (l) =>
                             l.is_purple_s1 || l.is_purple_s2 || l.is_purple_s3,
                         )
-                          ? "Session-best sector flagged (mirror of AFTER INSERT trigger)."
-                          : "Play to advance — purple when sector beats session min."}
+                          ? "🟣 Session-best sector (mirror AFTER INSERT)."
+                          : "Bấm Play — sector tím khi phá best session."}
                       </p>
                     </div>
                     <div>
                       <p className="mb-1 text-xs tracking-widest text-subtle uppercase">
-                        Derived · leaderboard
+                        Derived
                       </p>
                       <pre className="rounded bg-surface-2 p-2 text-fg">
-                        {`CALL Get_Live_Leaderboard(${sessionKey})\n-- rank by laps then time; DNF last`}
+                        {`CALL Get_Live_Leaderboard(${sessionKey})`}
                       </pre>
                     </div>
                   </div>
@@ -579,7 +572,7 @@ export function PitwallShell() {
           <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
             <p className="max-w-md text-sm text-muted">
               {loading
-                ? "Loading…"
+                ? "Đang tải leaderboard + laps từ MySQL…"
                 : "Chưa có data. Archive → 2024 → Watch chặng đã pump."}
             </p>
             <Button
@@ -593,19 +586,20 @@ export function PitwallShell() {
         )}
       </div>
 
+      {/* Playback — luôn hiện khi có laps */}
       {canReplay && (
-        <div className="sticky bottom-0 z-20 border-t border-border bg-surface px-3 py-2.5 sm:px-4">
+        <div className="sticky bottom-0 z-30 border-t border-border bg-surface/95 px-3 py-2.5 backdrop-blur sm:px-4">
           <div className="mb-2">
             <Slider
               min={1}
               max={Math.max(1, maxLap)}
               step={1}
-              value={[Math.max(1, currentLap)]}
+              value={[Math.min(maxLap, Math.max(1, currentLap))]}
               onValueChange={(v) => {
                 setPlaying(false);
                 setCurrentLap(v[0] ?? 1);
               }}
-              aria-label="Lap progress"
+              aria-label="Lap"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
