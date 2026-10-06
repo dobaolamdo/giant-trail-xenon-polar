@@ -6,6 +6,10 @@ import { pullLiveOf1 } from "@/lib/f1/live-of1";
 import { BAKU_RACE_KEY, bakuFallbackBoard } from "@/lib/f1/baku-fallback";
 import { mergeMeta, rosterMeta } from "@/lib/f1/drivers-roster";
 import {
+  leaderLapAt,
+  raceDurationSec,
+  raceMaxLap,
+  rankFromElapsed,
   rankFromLaps,
   type RankDriverMeta,
   type RankedRow,
@@ -59,6 +63,14 @@ function num(v: unknown): number | null {
   if (v == null || v === "") return null;
   const n = Number(v);
   return Number.isFinite(n) ? n : null;
+}
+
+function formatClock(sec: number): string {
+  const s = Math.max(0, Math.floor(sec));
+  const m = Math.floor(s / 60);
+  const r = s % 60;
+  const ms = Math.floor((Math.max(0, sec) - s) * 1000);
+  return `${String(m).padStart(2, "0")}:${String(r).padStart(2, "0")}.${String(ms).padStart(3, "0")}`;
 }
 
 async function fetchJson(url: string, ms = 45000): Promise<unknown> {
@@ -211,6 +223,8 @@ export function PitwallShell() {
   const [rawLaps, setRawLaps] = useState<RawLap[]>([]);
   const [maxLap, setMaxLap] = useState(0);
   const [currentLap, setCurrentLap] = useState(1);
+  const [elapsedSec, setElapsedSec] = useState(0);
+  const [durationSec, setDurationSec] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState<Speed>(16);
   const [selected, setSelected] = useState(1);
@@ -221,6 +235,12 @@ export function PitwallShell() {
 
   const maxLapRef = useRef(0);
   maxLapRef.current = maxLap;
+  const durationRef = useRef(0);
+  durationRef.current = durationSec;
+  const elapsedRef = useRef(0);
+  elapsedRef.current = elapsedSec;
+  const speedRef = useRef<Speed>(16);
+  speedRef.current = speed;
 
   useEffect(() => {
     if (view !== "timing" || !isOpenF1Key(sessionKey)) return;
@@ -233,6 +253,8 @@ export function PitwallShell() {
       setFinalBoard(null);
       setMaxLap(0);
       setCurrentLap(1);
+      setElapsedSec(0);
+      setDurationSec(0);
       setStints([]);
       setPits([]);
       setStatus("Loading MySQL…");
@@ -265,10 +287,8 @@ export function PitwallShell() {
       ]);
       if (cancelled) return;
 
-      const parsedStints = parseStints(stintsData);
-      const parsedPits = parsePits(pitsData);
-      setStints(parsedStints);
-      setPits(parsedPits);
+      setStints(parseStints(stintsData));
+      setPits(parsePits(pitsData));
 
       if (Array.isArray(lbData) && lbData.length > 0) {
         const fromLb = new Map<number, RankDriverMeta>();
@@ -346,19 +366,26 @@ export function PitwallShell() {
 
       if (cancelled) return;
 
-      const mx = laps.reduce((a, l) => Math.max(a, l.lap_number), 0);
+      const mx =
+        raceMaxLap(laps) ||
+        laps.reduce((a, l) => Math.max(a, l.lap_number), 0);
+      const dur = raceDurationSec(laps);
       setMeta(m);
       setRawLaps(laps);
       setMaxLap(mx);
+      setDurationSec(dur);
       setFinalBoard(gotLb);
       setCurrentLap(mx > 0 ? 1 : 0);
+      setElapsedSec(0);
 
       const firstDriver =
         gotLb?.[0]?.driver_number ?? (laps[0]?.driver_number || 1);
       setSelected(firstDriver);
 
-      if (laps.length > 0 && mx > 0) {
-        setStatus(`▶ Replay · ${laps.length} rows · L1–${mx} · bấm Play`);
+      if (laps.length > 0 && mx > 0 && dur > 0) {
+        setStatus(
+          `▶ Replay · ${laps.length} rows · ${formatClock(dur)} · x8–x64`,
+        );
       } else if (gotLb?.length) {
         setStatus(`Kết quả cuối · ${gotLb.length} xe (không có lap replay)`);
       } else {
@@ -369,7 +396,7 @@ export function PitwallShell() {
         maxLap: mx || gotLb?.length || 0,
         lap: mx > 0 ? 1 : 0,
         elapsed: 0,
-        duration: mx,
+        duration: dur || mx,
       });
       setLoading(false);
     })();
@@ -379,42 +406,67 @@ export function PitwallShell() {
     };
   }, [view, sessionKey, setArchiveClock]);
 
+  // Time-based clock (ms via rAF; speed multiplies real delta)
   useEffect(() => {
-    if (!playing || maxLap <= 0) return;
-    const ms = Math.max(60, 2800 / speed);
-    const id = window.setInterval(() => {
-      setCurrentLap((c) => {
-        if (c >= maxLapRef.current) {
-          setPlaying(false);
-          return maxLapRef.current;
-        }
-        return c + 1;
-      });
-    }, ms);
-    return () => clearInterval(id);
-  }, [playing, speed, maxLap]);
+    if (!playing || durationRef.current <= 0) return;
+    let raf = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const dt = (now - last) / 1000;
+      last = now;
+      const next = elapsedRef.current + dt * speedRef.current;
+      if (next >= durationRef.current) {
+        setElapsedSec(durationRef.current);
+        setCurrentLap(maxLapRef.current);
+        setPlaying(false);
+        return;
+      }
+      setElapsedSec(next);
+      setCurrentLap(Math.max(1, leaderLapAt(rawLaps, next)));
+      raf = requestAnimationFrame(tick);
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, [playing, rawLaps]);
 
   useEffect(() => {
     if (maxLap > 0) {
-      setArchiveClock({ lap: currentLap, maxLap, elapsed: currentLap });
+      setArchiveClock({
+        lap: currentLap,
+        maxLap,
+        elapsed: elapsedSec,
+        duration: durationSec || maxLap,
+      });
     }
-  }, [currentLap, maxLap, setArchiveClock]);
+  }, [currentLap, maxLap, elapsedSec, durationSec, setArchiveClock]);
 
-  const canReplay = rawLaps.length > 0 && maxLap > 0;
+  const canReplay = rawLaps.length > 0 && maxLap > 0 && durationSec > 0;
 
   const board: LeaderboardRow[] = useMemo(() => {
     let rows: LeaderboardRow[] = [];
-    if (canReplay && currentLap > 0) {
-      rows = enrichNames(
-        rankedToUi(rankFromLaps(rawLaps, meta, { maxLap: currentLap })),
-        meta,
-      );
+    if (canReplay && (elapsedSec > 0 || playing || currentLap > 0)) {
+      const t = elapsedSec > 0 ? elapsedSec : 0.001;
+      rows = enrichNames(rankedToUi(rankFromElapsed(rawLaps, meta, t)), meta);
     } else if (finalBoard?.length) {
       rows = enrichNames(finalBoard, meta);
     }
     if (!rows.length) return rows;
-    return applyTyreAndPit(rows, stints, pits, currentLap || maxLap || 1);
-  }, [canReplay, rawLaps, meta, currentLap, finalBoard, stints, pits, maxLap]);
+    const lapForTyre = Math.max(
+      1,
+      currentLap || leaderLapAt(rawLaps, elapsedSec),
+    );
+    return applyTyreAndPit(rows, stints, pits, lapForTyre);
+  }, [
+    canReplay,
+    rawLaps,
+    meta,
+    elapsedSec,
+    playing,
+    currentLap,
+    finalBoard,
+    stints,
+    pits,
+  ]);
 
   const driverRow = board.find((b) => b.driver_number === selected);
   const driverList: DriverListRow | undefined = useMemo(() => {
@@ -437,17 +489,19 @@ export function PitwallShell() {
   }, [canReplay, rawLaps, selected, currentLap, maxLap, stints, pits]);
 
   const togglePlay = useCallback(() => {
-    if (!canReplay) return;
-    if (currentLap >= maxLap) {
+    if (!canReplay || durationSec <= 0) return;
+    if (elapsedSec >= durationSec - 0.05) {
+      setElapsedSec(0);
       setCurrentLap(1);
       setPlaying(true);
       return;
     }
     setPlaying((p) => !p);
-  }, [canReplay, currentLap, maxLap]);
+  }, [canReplay, durationSec, elapsedSec]);
 
   const restart = useCallback(() => {
     if (!canReplay) return;
+    setElapsedSec(0);
     setCurrentLap(1);
     setPlaying(true);
   }, [canReplay]);
@@ -493,7 +547,11 @@ export function PitwallShell() {
           </span>
           <span className="ml-auto text-[10px] uppercase opacity-70">
             key {sessionKey}
-            {maxLap > 0 ? ` · L${currentLap}/${maxLap}` : ""}
+            {durationSec > 0
+              ? ` · ${formatClock(elapsedSec)}`
+              : maxLap > 0
+                ? ` · L${currentLap}/${maxLap}`
+                : ""}
           </span>
         </div>
       )}
@@ -575,15 +633,22 @@ export function PitwallShell() {
         <div className="sticky bottom-0 z-30 border-t border-border bg-surface/95 px-3 py-2.5 backdrop-blur sm:px-4">
           <div className="mb-2">
             <Slider
-              min={1}
-              max={Math.max(1, maxLap)}
+              min={0}
+              max={Math.max(1, Math.round(durationSec * 10))}
               step={1}
-              value={[Math.min(maxLap, Math.max(1, currentLap))]}
+              value={[
+                Math.min(
+                  Math.round(durationSec * 10),
+                  Math.max(0, Math.round(elapsedSec * 10)),
+                ),
+              ]}
               onValueChange={(v) => {
                 setPlaying(false);
-                setCurrentLap(v[0] ?? 1);
+                const sec = (v[0] ?? 0) / 10;
+                setElapsedSec(sec);
+                setCurrentLap(Math.max(1, leaderLapAt(rawLaps, sec)));
               }}
-              aria-label="Lap"
+              aria-label="Race time"
             />
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -593,7 +658,7 @@ export function PitwallShell() {
               onClick={togglePlay}
               aria-label={playing ? "Pause" : "Play"}
             >
-              {playing && currentLap < maxLap ? (
+              {playing && elapsedSec < durationSec ? (
                 <Pause className="size-4" />
               ) : (
                 <Play className="size-4" />
@@ -621,7 +686,8 @@ export function PitwallShell() {
               ))}
             </div>
             <span className="ml-auto font-mono text-xs text-muted tabular">
-              Lap {String(currentLap).padStart(2, "0")}/{maxLap}
+              {formatClock(elapsedSec)} / {formatClock(durationSec)}
+              {maxLap > 0 ? ` · L${currentLap}/${maxLap}` : ""}
             </span>
           </div>
         </div>
