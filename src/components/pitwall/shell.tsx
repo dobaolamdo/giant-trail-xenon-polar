@@ -15,6 +15,14 @@ import { ArchiveView } from "./archive";
 import { SchemaView } from "./schema-view";
 import { DriverDetail } from "./driver-detail";
 import { SqlPanel } from "./sql-panel";
+import {
+  applyLapCompounds,
+  applyTyreAndPit,
+  parsePits,
+  parseStints,
+  type Pit,
+  type Stint,
+} from "@/lib/f1/stints-pits";
 import type {
   DriverListRow,
   LapHistoryRow,
@@ -208,6 +216,8 @@ export function PitwallShell() {
   const [selected, setSelected] = useState(1);
   const [finalBoard, setFinalBoard] = useState<LeaderboardRow[] | null>(null);
   const [side, setSide] = useState<"driver" | "sql">("driver");
+  const [stints, setStints] = useState<Stint[]>([]);
+  const [pits, setPits] = useState<Pit[]>([]);
 
   const maxLapRef = useRef(0);
   maxLapRef.current = maxLap;
@@ -223,6 +233,8 @@ export function PitwallShell() {
       setFinalBoard(null);
       setMaxLap(0);
       setCurrentLap(1);
+      setStints([]);
+      setPits([]);
       setStatus("Loading MySQL…");
 
       let m = rosterMeta();
@@ -236,9 +248,27 @@ export function PitwallShell() {
         `${API}/api/session-laps?session_key=${sessionKey}`,
         60000,
       ).catch(() => null);
+      const stintsP = fetchJson(
+        `https://api.openf1.org/v1/stints?session_key=${sessionKey}`,
+        30000,
+      ).catch(() => null);
+      const pitsP = fetchJson(
+        `https://api.openf1.org/v1/pit?session_key=${sessionKey}`,
+        30000,
+      ).catch(() => null);
 
-      const [lbData, lapsData] = await Promise.all([lbP, lapsP]);
+      const [lbData, lapsData, stintsData, pitsData] = await Promise.all([
+        lbP,
+        lapsP,
+        stintsP,
+        pitsP,
+      ]);
       if (cancelled) return;
+
+      const parsedStints = parseStints(stintsData);
+      const parsedPits = parsePits(pitsData);
+      setStints(parsedStints);
+      setPits(parsedPits);
 
       if (Array.isArray(lbData) && lbData.length > 0) {
         const fromLb = new Map<number, RankDriverMeta>();
@@ -373,15 +403,18 @@ export function PitwallShell() {
   const canReplay = rawLaps.length > 0 && maxLap > 0;
 
   const board: LeaderboardRow[] = useMemo(() => {
+    let rows: LeaderboardRow[] = [];
     if (canReplay && currentLap > 0) {
-      return enrichNames(
+      rows = enrichNames(
         rankedToUi(rankFromLaps(rawLaps, meta, { maxLap: currentLap })),
         meta,
       );
+    } else if (finalBoard?.length) {
+      rows = enrichNames(finalBoard, meta);
     }
-    if (finalBoard?.length) return enrichNames(finalBoard, meta);
-    return [];
-  }, [canReplay, rawLaps, meta, currentLap, finalBoard]);
+    if (!rows.length) return rows;
+    return applyTyreAndPit(rows, stints, pits, currentLap || maxLap || 1);
+  }, [canReplay, rawLaps, meta, currentLap, finalBoard, stints, pits, maxLap]);
 
   const driverRow = board.find((b) => b.driver_number === selected);
   const driverList: DriverListRow | undefined = useMemo(() => {
@@ -397,13 +430,11 @@ export function PitwallShell() {
     };
   }, [meta, selected, driverRow]);
 
-  const driverLaps = useMemo(
-    () =>
-      canReplay
-        ? annotatePurple(rawLaps, selected, currentLap || maxLap)
-        : [],
-    [canReplay, rawLaps, selected, currentLap, maxLap],
-  );
+  const driverLaps = useMemo(() => {
+    if (!canReplay) return [];
+    const base = annotatePurple(rawLaps, selected, currentLap || maxLap);
+    return applyLapCompounds(base, stints, pits, selected);
+  }, [canReplay, rawLaps, selected, currentLap, maxLap, stints, pits]);
 
   const togglePlay = useCallback(() => {
     if (!canReplay) return;
