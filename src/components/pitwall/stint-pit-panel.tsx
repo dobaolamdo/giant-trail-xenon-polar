@@ -10,14 +10,10 @@ type Props = {
   selected: number;
   currentLap: number;
   meta: Map<number, RankDriverMeta>;
-  /** all = full session; selected = only selected driver */
   scope?: "selected" | "all";
 };
 
-function codeOf(
-  meta: Map<number, RankDriverMeta>,
-  n: number,
-): string {
+function codeOf(meta: Map<number, RankDriverMeta>, n: number): string {
   const m = meta.get(n);
   return (m?.code || m?.full_name?.split(" ").pop() || `#${n}`).toUpperCase();
 }
@@ -62,7 +58,6 @@ export function StintPitPanel({
 
   return (
     <div className="h-full space-y-4 overflow-y-auto p-3 text-[11px]">
-      {/* Active */}
       <div className="rounded-md border border-border bg-surface-2/50 p-2">
         <p className="mb-1 text-[10px] tracking-widest text-muted uppercase">
           Now · #{selected} · L{currentLap || "—"}
@@ -88,7 +83,6 @@ export function StintPitPanel({
         )}
       </div>
 
-      {/* Stints */}
       <div>
         <p className="mb-1.5 text-[10px] font-semibold tracking-widest text-muted uppercase">
           Stints · lốp theo dải vòng
@@ -108,7 +102,7 @@ export function StintPitPanel({
               </thead>
               <tbody>
                 {driverStints.map((s, i) => {
-                  const end = s.lap_end ?? currentLap || s.lap_start;
+                  const end = s.lap_end ?? (currentLap || s.lap_start);
                   const nLaps = Math.max(1, end - s.lap_start + 1);
                   const active =
                     s.driver_number === selected &&
@@ -144,7 +138,6 @@ export function StintPitPanel({
         )}
       </div>
 
-      {/* Pits */}
       <div>
         <p className="mb-1.5 text-[10px] font-semibold tracking-widest text-muted uppercase">
           Pit stops · thời gian dừng
