@@ -19,6 +19,7 @@ import { ArchiveView } from "./archive";
 import { SchemaView } from "./schema-view";
 import { DriverDetail } from "./driver-detail";
 import { SqlPanel } from "./sql-panel";
+import { StintPitPanel } from "./stint-pit-panel";
 import {
   applyLapCompounds,
   applyTyreAndPit,
@@ -229,7 +230,7 @@ export function PitwallShell() {
   const [speed, setSpeed] = useState<Speed>(16);
   const [selected, setSelected] = useState(1);
   const [finalBoard, setFinalBoard] = useState<LeaderboardRow[] | null>(null);
-  const [side, setSide] = useState<"driver" | "sql">("driver");
+  const [side, setSide] = useState<"driver" | "stints" | "sql">("driver");
   const [stints, setStints] = useState<Stint[]>([]);
   const [pits, setPits] = useState<Pit[]>([]);
 
@@ -406,7 +407,6 @@ export function PitwallShell() {
     };
   }, [view, sessionKey, setArchiveClock]);
 
-  // Time-based clock (ms via rAF; speed multiplies real delta)
   useEffect(() => {
     if (!playing || durationRef.current <= 0) return;
     let raf = 0;
@@ -583,6 +583,14 @@ export function PitwallShell() {
                 </Button>
                 <Button
                   size="sm"
+                  variant={side === "stints" ? "secondary" : "ghost"}
+                  className="flex-1"
+                  onClick={() => setSide("stints")}
+                >
+                  Stints
+                </Button>
+                <Button
+                  size="sm"
                   variant={side === "sql" ? "secondary" : "ghost"}
                   className="flex-1"
                   onClick={() => setSide("sql")}
@@ -596,6 +604,15 @@ export function PitwallShell() {
                     driver={driverList}
                     row={driverRow}
                     laps={driverLaps}
+                  />
+                ) : side === "stints" ? (
+                  <StintPitPanel
+                    stints={stints}
+                    pits={pits}
+                    selected={selected}
+                    currentLap={currentLap}
+                    meta={meta}
+                    scope="selected"
                   />
                 ) : (
                   <SqlPanel
