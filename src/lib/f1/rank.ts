@@ -47,6 +47,136 @@ function num(v: unknown): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** Per-driver sorted lap durations (seconds). */
+function driverLapSeq(
+  laps: RankableLap[],
+): Map<number, { lap: number; dur: number }[]> {
+  const by = new Map<number, { lap: number; dur: number }[]>();
+  for (const l of laps) {
+    const dur = num(l.lap_duration);
+    if (dur == null || dur <= 0) continue;
+    const arr = by.get(l.driver_number) ?? [];
+    arr.push({ lap: l.lap_number, dur });
+    by.set(l.driver_number, arr);
+  }
+  for (const arr of by.values()) {
+    arr.sort((a, b) => a.lap - b.lap);
+  }
+  return by;
+}
+
+/** Full race duration (seconds) = max cumulative time across drivers. */
+export function raceDurationSec(laps: RankableLap[]): number {
+  const by = driverLapSeq(laps);
+  let max = 0;
+  for (const arr of by.values()) {
+    const t = arr.reduce((s, x) => s + x.dur, 0);
+    if (t > max) max = t;
+  }
+  return max;
+}
+
+/** Max lap number present in data. */
+export function raceMaxLap(laps: RankableLap[]): number {
+  let m = 0;
+  for (const l of laps) if (l.lap_number > m) m = l.lap_number;
+  return m;
+}
+
+/**
+ * Rank at race clock `elapsedSec` (seconds from race start).
+ * A driver has completed lap n when cumulative time through lap n <= elapsed.
+ */
+export function rankFromElapsed(
+  laps: RankableLap[],
+  meta: Map<number, RankDriverMeta>,
+  elapsedSec: number,
+  opts?: { dnfDrivers?: Set<number> },
+): RankedRow[] {
+  const dnfDrivers = opts?.dnfDrivers ?? new Set<number>();
+  const by = driverLapSeq(laps);
+  const t = Math.max(0, elapsedSec);
+
+  type Acc = {
+    driver_number: number;
+    laps: number;
+    total: number;
+    last: number | null;
+    dnf: boolean;
+  };
+  const entries: Acc[] = [];
+
+  const allDrivers = new Set<number>([
+    ...by.keys(),
+    ...dnfDrivers,
+  ]);
+
+  for (const driver_number of allDrivers) {
+    const seq = by.get(driver_number) ?? [];
+    let cum = 0;
+    let completed = 0;
+    let last: number | null = null;
+    for (const row of seq) {
+      if (cum + row.dur <= t + 1e-9) {
+        cum += row.dur;
+        completed += 1;
+        last = row.dur;
+      } else {
+        break;
+      }
+    }
+    entries.push({
+      driver_number,
+      laps: completed,
+      total: cum,
+      last,
+      dnf: dnfDrivers.has(driver_number),
+    });
+  }
+
+  entries.sort((a, b) => {
+    if (a.dnf !== b.dnf) return a.dnf ? 1 : -1;
+    if (a.laps !== b.laps) return b.laps - a.laps;
+    return a.total - b.total;
+  });
+
+  const leader = entries.find((e) => !e.dnf && e.laps > 0);
+  const leaderT = leader?.total ?? 0;
+  const leaderLaps = leader?.laps ?? 0;
+
+  return entries.map((e, i) => {
+    const m = meta.get(e.driver_number);
+    let gap: number | null = null;
+    if (!e.dnf && leader && e.driver_number !== leader.driver_number) {
+      if (e.laps < leaderLaps) gap = null;
+      else gap = Math.max(0, e.total - leaderT);
+    }
+    return {
+      live_rank: i + 1,
+      driver_number: e.driver_number,
+      full_name: m?.full_name ?? `#${e.driver_number}`,
+      team_name: m?.team_name ?? "",
+      team_colour: (m?.team_colour ?? "888888").replace(/^#/, ""),
+      gap_to_leader: e.dnf ? null : gap,
+      gap_to_car_ahead: null,
+      last_lap: e.last,
+      status: e.dnf ? ("DNF" as const) : null,
+      position_change: 0,
+      code: m?.code,
+      laps_completed: e.laps,
+    };
+  });
+}
+
+/** Leader's completed lap count at elapsedSec (for sector/purple UI). */
+export function leaderLapAt(
+  laps: RankableLap[],
+  elapsedSec: number,
+): number {
+  const ranked = rankFromElapsed(laps, new Map(), elapsedSec);
+  return ranked[0]?.laps_completed ?? 0;
+}
+
 /** Build leaderboard from raw laps up to maxLap (inclusive). */
 export function rankFromLaps(
   laps: RankableLap[],
@@ -74,9 +204,8 @@ export function rankFromLaps(
     by.set(l.driver_number, cur);
   }
 
-  // Include DNF drivers who may have zero timed laps in the window
-  for (const num of dnfDrivers) {
-    if (!by.has(num)) by.set(num, { laps: 0, total: 0, last: null });
+  for (const n of dnfDrivers) {
+    if (!by.has(n)) by.set(n, { laps: 0, total: 0, last: null });
   }
 
   const entries = [...by.entries()].map(([driver_number, acc]) => ({
@@ -87,8 +216,6 @@ export function rankFromLaps(
     dnf: dnfDrivers.has(driver_number),
   }));
 
-  // 1) classified (not DNF) by more laps first, then less time
-  // 2) DNF last, by more laps first, then less time
   entries.sort((a, b) => {
     if (a.dnf !== b.dnf) return a.dnf ? 1 : -1;
     if (a.laps !== b.laps) return b.laps - a.laps;
@@ -103,12 +230,8 @@ export function rankFromLaps(
     const m = meta.get(e.driver_number);
     let gap: number | null = null;
     if (!e.dnf && leader && e.driver_number !== leader.driver_number) {
-      if (e.laps < leaderLaps) {
-        // Lapped — show null gap (UI can show +1 lap later)
-        gap = null;
-      } else {
-        gap = Math.max(0, e.total - leaderT);
-      }
+      if (e.laps < leaderLaps) gap = null;
+      else gap = Math.max(0, e.total - leaderT);
     }
     return {
       live_rank: i + 1,
