@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       year:
-        description: "Year to pump (2023 | 2024 | 2025 | all)"
+        description: "Year to pump (2023 | 2024 | 2025 | 2026 | all)"
         required: true
         default: "2024"
         type: choice
@@ -12,6 +12,7 @@ on:
           - "2024"
           - "2023"
           - "2025"
+          - "2026"
           - "all"
 
 jobs:
@@ -34,6 +35,9 @@ jobs:
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2025" ]; then
             KEYS="$KEYS 9693 9998 10006 10014 10022 10033 9987 9979 9971 9963 9955 9947 9939 9928 9920 9912 9904 9896 9888 9877 9869 9858 9850 9839"
           fi
+          if [ "$YEAR" = "all" ] || [ "$YEAR" = "2026" ]; then
+            KEYS="$KEYS 11234 11245 11253 11261 11269 11280 11291 11299 11307 11315 11326 11334 11342 11353 11361 11369 11377 11731 11388 11396 11404 11412 11420 11428 11436"
+          fi
           echo "keys=$KEYS" >> "$GITHUB_OUTPUT"
           echo "Will pump: $KEYS"
 
@@ -50,9 +54,7 @@ jobs:
           API="${API%/}"
           OK=0
           FAIL=0
-          SKIP=0
 
-          # wake Render once
           curl -sS -m 60 "$API/health" || true
           sleep 5
 
@@ -69,7 +71,6 @@ jobs:
               continue
             fi
 
-            # one short retry only (Render cold / blip)
             echo "retry once (15s)…"
             sleep 15
             curl -sS -m 30 "$API/health" >/dev/null 2>&1 || true
@@ -88,6 +89,5 @@ jobs:
           done
 
           echo "DONE ok=$OK fail=$FAIL"
-          # soft fail — partial pump is still useful
           if [ "$OK" -eq 0 ]; then exit 1; fi
           exit 0
