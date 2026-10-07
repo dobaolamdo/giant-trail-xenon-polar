@@ -2,13 +2,10 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import mysql from "mysql2/promise";
-
 dotenv.config();
-
 const app = express();
 app.use(cors());
 app.use(express.json());
-
 const pool = mysql.createPool({
   host: process.env.DATABASE_HOST,
   port: Number(process.env.DATABASE_PORT || 3306),
@@ -17,17 +14,14 @@ const pool = mysql.createPool({
   database: process.env.DATABASE_NAME || "defaultdb",
   ssl: { rejectUnauthorized: false },
   waitForConnections: true,
-  connectionLimit: 5,
+  connectionLimit: 10,
 });
-
 app.get("/", (_req, res) => {
   res.json({ service: "pitwall-api", ok: true });
 });
-
 app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
-
 app.get("/api/leaderboard", async (req, res) => {
   const sessionKey = Number(req.query.session_key || 9601);
   try {
@@ -42,7 +36,6 @@ app.get("/api/leaderboard", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 app.get("/api/session/:key", async (req, res) => {
   try {
     const [result] = await pool.query("CALL Get_Session_Info(?)", [
@@ -55,7 +48,6 @@ app.get("/api/session/:key", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
 app.get("/api/laps", async (req, res) => {
   const sessionKey = Number(req.query.session_key || 9601);
   const driver = Number(req.query.driver_number);
@@ -71,25 +63,17 @@ app.get("/api/laps", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// Toàn bộ lap 1 session — cho archive replay theo lap
 app.get("/api/session-laps", async (req, res) => {
   const sessionKey = Number(req.query.session_key);
   if (!sessionKey) {
-    return res.status(400).json({ error: "missing session_key" });
+    return res.status(400).json({ error: "session_key required" });
   }
   try {
     const [rows] = await pool.query(
-      `SELECT
-         driver_number,
-         lap_number,
-         lap_duration,
-         duration_sector_1,
-         duration_sector_2,
-         duration_sector_3
+      `SELECT session_key, driver_number, lap_number, lap_duration,
+              duration_sector_1, duration_sector_2, duration_sector_3
        FROM laps
        WHERE session_key = ?
-         AND lap_duration IS NOT NULL
        ORDER BY lap_number, driver_number`,
       [sessionKey],
     );
@@ -99,57 +83,36 @@ app.get("/api/session-laps", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// Danh sách session đã có data (cho Archive)
-app.get("/api/sessions", async (req, res) => {
-  const year = Number(req.query.year || 2024);
+app.get("/api/sessions", async (_req, res) => {
   try {
-    const [rows] = await pool.query(
-      `
-      SELECT
-        s.session_key,
-        s.session_name,
-        s.session_type,
-        s.date_start,
-        s.meeting_key,
-        m.meeting_name,
-        m.circuit_short_name,
-        m.country_name,
-        m.year
-      FROM sessions s
-      INNER JOIN (
-        SELECT DISTINCT session_key FROM laps
-      ) x ON x.session_key = s.session_key
-      LEFT JOIN meetings m ON m.meeting_key = s.meeting_key
-      WHERE (? IS NULL OR m.year = ? OR m.year IS NULL)
-      ORDER BY s.date_start IS NULL, s.date_start, s.session_key
-      `,
-      [year || null, year || null],
-    );
-
-    if (rows.length > 0) {
-      return res.json(rows);
-    }
-
-    // Fallback: chỉ có laps, chưa join được meetings
-    const [keys] = await pool.query(
-      `SELECT DISTINCT session_key FROM laps ORDER BY session_key`,
-    );
-    res.json(keys);
-  } catch (err) {
-    console.error(err);
+    let rows;
     try {
-      const [keys] = await pool.query(
+      const [r] = await pool.query(
+        `SELECT DISTINCT s.session_key, s.session_name, s.session_type,
+                m.meeting_name, m.circuit_short_name, m.country_name, m.year
+         FROM sessions s
+         LEFT JOIN meetings m ON m.meeting_key = s.meeting_key
+         ORDER BY m.year DESC, s.session_key`,
+      );
+      rows = r;
+    } catch {
+      const [r] = await pool.query(
         `SELECT DISTINCT session_key FROM laps ORDER BY session_key`,
       );
-      res.json(keys);
-    } catch (err2) {
-      res.status(500).json({ error: err2.message });
+      rows = r;
     }
+    if (!rows?.length) {
+      const [r] = await pool.query(
+        `SELECT DISTINCT session_key FROM laps ORDER BY session_key`,
+      );
+      rows = r;
+    }
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Pump OpenF1 historical → Aiven
 app.get("/api/pump", async (req, res) => {
   const secret = req.query.secret;
   if (secret !== process.env.PUMP_SECRET) {
@@ -160,22 +123,44 @@ app.get("/api/pump", async (req, res) => {
     return res.status(400).json({ error: "missing session_key" });
   }
 
-  try {
-    const get = async (url) => {
-      const r = await fetch(url);
-      if (!r.ok) throw new Error(`${r.status} ${url}`);
-      return r.json();
-    };
+  const get = async (url) => {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(`${r.status} ${url}`);
+    return r.json();
+  };
 
+  async function bulkLaps(rows) {
+    const CHUNK = 150;
+    let n = 0;
+    for (let i = 0; i < rows.length; i += CHUNK) {
+      const chunk = rows.slice(i, i + CHUNK);
+      await pool.query(
+        `INSERT INTO laps (
+           session_key, driver_number, lap_number, lap_duration,
+           duration_sector_1, duration_sector_2, duration_sector_3
+         ) VALUES ?
+         ON DUPLICATE KEY UPDATE
+           lap_duration = VALUES(lap_duration),
+           duration_sector_1 = VALUES(duration_sector_1),
+           duration_sector_2 = VALUES(duration_sector_2),
+           duration_sector_3 = VALUES(duration_sector_3)`,
+        [chunk],
+      );
+      n += chunk.length;
+    }
+    return n;
+  }
+
+  try {
     const sessions = await get(
       `https://api.openf1.org/v1/sessions?session_key=${SESSION_KEY}`,
     );
     const s = Array.isArray(sessions) ? sessions[0] : null;
     if (s) {
-      await pool.query(
-        `INSERT IGNORE INTO seasons (year, name) VALUES (?, ?)`,
-        [s.year, `${s.year} FIA Formula One World Championship`],
-      );
+      await pool.query(`INSERT IGNORE INTO seasons (year, name) VALUES (?, ?)`, [
+        s.year,
+        `${s.year} FIA Formula One World Championship`,
+      ]);
       await pool.query(
         `INSERT IGNORE INTO meetings (
            meeting_key, year, meeting_name, circuit_short_name, country_name, date_start
@@ -239,31 +224,20 @@ app.get("/api/pump", async (req, res) => {
     const laps = await get(
       `https://api.openf1.org/v1/laps?session_key=${SESSION_KEY}`,
     );
-    let lapCount = 0;
+    const lapRows = [];
     for (const lap of laps) {
       if (lap.driver_number == null || lap.lap_number == null) continue;
-      await pool.query(
-        `INSERT INTO laps (
-           session_key, driver_number, lap_number, lap_duration,
-           duration_sector_1, duration_sector_2, duration_sector_3
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON DUPLICATE KEY UPDATE
-           lap_duration = VALUES(lap_duration),
-           duration_sector_1 = VALUES(duration_sector_1),
-           duration_sector_2 = VALUES(duration_sector_2),
-           duration_sector_3 = VALUES(duration_sector_3)`,
-        [
-          SESSION_KEY,
-          lap.driver_number,
-          lap.lap_number,
-          lap.lap_duration ?? null,
-          lap.duration_sector_1 ?? null,
-          lap.duration_sector_2 ?? null,
-          lap.duration_sector_3 ?? null,
-        ],
-      );
-      lapCount++;
+      lapRows.push([
+        SESSION_KEY,
+        lap.driver_number,
+        lap.lap_number,
+        lap.lap_duration ?? null,
+        lap.duration_sector_1 ?? null,
+        lap.duration_sector_2 ?? null,
+        lap.duration_sector_3 ?? null,
+      ]);
     }
+    const lapCount = await bulkLaps(lapRows);
 
     res.json({
       ok: true,
