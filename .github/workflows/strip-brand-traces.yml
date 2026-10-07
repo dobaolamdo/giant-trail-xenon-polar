@@ -1,0 +1,76 @@
+name: Strip brand traces
+
+# Xóa .grok/, public/__grok/, rename script, scrub chữ grok trong source.
+# Chạy 1 lần: Actions → Strip brand traces → Run workflow
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  strip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Remove scaffolding + rename + scrub
+        run: |
+          set -euo pipefail
+
+          rm -rf .grok public/__grok
+
+          if [ -f scripts/grok-pwa-plugin.mjs ]; then mv scripts/grok-pwa-plugin.mjs scripts/pwa-plugin.mjs; fi
+          if [ -f scripts/grok-pwa-shared.mjs ]; then mv scripts/grok-pwa-shared.mjs scripts/pwa-shared.mjs; fi
+          if [ -f scripts/grok-pwa-shared.d.mts ]; then mv scripts/grok-pwa-shared.d.mts scripts/pwa-shared.d.mts; fi
+          if [ -f server/middleware/grok-pwa.ts ]; then mv server/middleware/grok-pwa.ts server/middleware/pwa.ts; fi
+          if [ -f server/virtual-grok-og-identity.d.ts ]; then mv server/virtual-grok-og-identity.d.ts server/virtual-og-identity.d.ts; fi
+
+          # Chỉ file text — không đụng binary
+          mapfile -t FILES < <(find . -type f \
+            -not -path './.git/*' \
+            -not -path './node_modules/*' \
+            -not -path './.vercel/*' \
+            \( -name '*.ts' -o -name '*.tsx' -o -name '*.js' -o -name '*.mjs' \
+               -o -name '*.mts' -o -name '*.json' -o -name '*.md' -o -name '*.yml' \
+               -o -name '*.yaml' -o -name '*.css' -o -name '*.html' -o -name '*.svg' \
+               -o -name '*.txt' -o -name '*.d.ts' \)
+          )
+
+          for f in "${FILES[@]}"; do
+            # skip this workflow file's historical name mentions if any
+            sed -i \
+              -e 's/og\.grok\.me/og.example.com/g' \
+              -e 's/gate\.grok\.me/gate.example.com/g' \
+              -e 's/\.grok\.me/.example.com/g' \
+              -e 's/GROK_CONNECTORS_URL/APP_CONNECTORS_URL/g' \
+              -e 's/GROK_PROJECT_ID/APP_PROJECT_ID/g' \
+              -e 's/GROK_CONNECTOR_ACCESS_TOKEN/APP_CONNECTOR_ACCESS_TOKEN/g' \
+              -e 's/GROK_/APP_/g' \
+              -e 's|\.grok/|.cache/|g' \
+              -e 's/grok-pwa-shared/pwa-shared/g' \
+              -e 's/grok-pwa-plugin/pwa-plugin/g' \
+              -e 's/grokPwaPlugin/pwaPlugin/g' \
+              -e 's/__grok/__assets/g' \
+              -e 's/\bGrok\b/App/g' \
+              -e 's/\bgrok\b/app/g' \
+              -e 's/\bGROK\b/APP/g' \
+              -e 's/[Gg][Rr][Oo][Kk]/app/g' \
+              "$f" || true
+          done
+
+          echo "Remaining matches (should be empty or only this workflow):"
+          grep -RIn -E '[Gg]rok' --exclude-dir=.git --exclude-dir=node_modules . || true
+
+      - name: Commit and push
+        run: |
+          set -e
+          git config user.name "pitwall-bot"
+          git config user.email "pitwall-bot@users.noreply.github.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "Nothing to commit"
+            exit 0
+          fi
+          git commit -m "chore: strip all grok/brand traces from source tree"
+          git push
