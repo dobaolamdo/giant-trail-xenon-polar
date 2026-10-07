@@ -1,12 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
 import { Play, Trophy } from "lucide-react";
 import {
-  Get_Constructor_Standings,
-  Get_Driver_Standings,
   Get_Season_Meetings,
   Get_Seasons,
   SESSION_KEY,
 } from "@/lib/f1/api";
+import {
+  fetchYearStandings,
+  type ConstructorStandingRow,
+  type DriverStandingRow,
+} from "@/lib/f1/standings-live";
 import { usePitwall } from "@/lib/f1/store";
 import { splitName } from "@/lib/f1/format";
 import { Badge } from "@/components/ui/badge";
@@ -71,14 +74,48 @@ export function ArchiveView() {
   const openSession = usePitwall((s) => s.setSessionKey);
   const seasons = Get_Seasons();
   const meetingsLocal = Get_Season_Meetings(year);
-  const drivers = Get_Driver_Standings(year);
-  const teams = Get_Constructor_Standings(year);
+
+  const [drivers, setDrivers] = useState<DriverStandingRow[]>([]);
+  const [teams, setTeams] = useState<ConstructorStandingRow[]>([]);
+  const [standingsLoading, setStandingsLoading] = useState(false);
+  const [standingsHint, setStandingsHint] = useState("");
   const leader = drivers[0];
 
   const [apiSessions, setApiSessions] = useState<ApiSession[]>([]);
   const [apiLoading, setApiLoading] = useState(false);
   const [source, setSource] = useState<"openf1" | "db" | "none">("none");
   const [hint, setHint] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    setStandingsLoading(true);
+    setStandingsHint("");
+    (async () => {
+      try {
+        const { drivers: d, teams: tm, racesUsed } =
+          await fetchYearStandings(year);
+        if (cancelled) return;
+        setDrivers(d);
+        setTeams(tm);
+        setStandingsHint(
+          racesUsed > 0
+            ? `OpenF1 official · ${racesUsed} races · points chuẩn FIA`
+            : "Chưa có session_result (race chưa chạy / thiếu data)",
+        );
+      } catch {
+        if (!cancelled) {
+          setDrivers([]);
+          setTeams([]);
+          setStandingsHint("Không tải được điểm từ OpenF1");
+        }
+      } finally {
+        if (!cancelled) setStandingsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [year]);
 
   useEffect(() => {
     let cancelled = false;
@@ -90,7 +127,6 @@ export function ArchiveView() {
         import.meta.env.VITE_API_URL ||
         "https://f1-dashboard-sbrl.onrender.com";
 
-      // 1) MySQL trước (hoạt động khi OpenF1 lock)
       try {
         const res = await fetch(`${base}/api/sessions?year=${year}`);
         const data = await res.json();
@@ -114,7 +150,6 @@ export function ArchiveView() {
               r.country_name != null ? String(r.country_name) : null,
             year: r.year != null ? Number(r.year) : year,
           }));
-          // Chỉ key thuần → gắn nhãn Race
           const normalized = mapped.map((s) =>
             s.meeting_name
               ? s
@@ -127,13 +162,11 @@ export function ArchiveView() {
           setApiSessions(normalized);
           setSource("db");
           setApiLoading(false);
-          // Vẫn thử OpenF1 để bổ sung FP nếu không lock
         }
       } catch {
         /* fall through */
       }
 
-      // 2) OpenF1 full calendar (khi không lock)
       try {
         const res = await fetch(
           `https://api.openf1.org/v1/sessions?year=${year}`,
@@ -258,19 +291,21 @@ export function ArchiveView() {
             </Button>
           ))}
         <span className="ml-auto text-xs tracking-wider text-muted uppercase">
-          {source === "openf1"
-            ? `OpenF1 · ${apiSessions.length} sessions`
-            : source === "db"
-              ? `MySQL · ${apiSessions.length} sessions`
-              : apiLoading
-                ? "Loading…"
-                : "Local"}
+          {standingsLoading
+            ? "Points…"
+            : source === "openf1"
+              ? `OpenF1 · ${apiSessions.length} sessions`
+              : source === "db"
+                ? `MySQL · ${apiSessions.length} sessions`
+                : apiLoading
+                  ? "Loading…"
+                  : "Local"}
         </span>
       </div>
 
-      {hint && (
+      {(hint || standingsHint) && (
         <p className="rounded-md bg-amber-500/10 px-3 py-2 text-xs text-amber-200 ring-1 ring-amber-500/30">
-          {hint}
+          {[hint, standingsHint].filter(Boolean).join(" · ")}
         </p>
       )}
 
@@ -401,84 +436,101 @@ export function ArchiveView() {
         )}
 
         {tab === "drivers" && (
-          <table className="w-full text-left">
-            <thead className="sticky top-0 bg-surface">
-              <tr className="text-xs tracking-widest text-subtle uppercase">
-                <th className="px-3 py-2 font-medium">P</th>
-                <th className="px-1 py-2 font-medium">Driver</th>
-                <th className="hidden px-1 py-2 font-medium sm:table-cell">
-                  Team
-                </th>
-                <th className="px-2 py-2 font-medium text-right">Wins</th>
-                <th className="px-3 py-2 font-medium text-right">Pts</th>
-              </tr>
-            </thead>
-            <tbody>
-              {drivers.map((d) => (
-                <tr key={d.driver_number} className="border-t border-border">
-                  <td className="px-3 py-2 font-mono text-sm tabular text-muted">
-                    {d.position}
-                  </td>
-                  <td className="px-1 py-2">
-                    <span className="flex items-center gap-2">
-                      <span
-                        className="flex size-6 shrink-0 items-center justify-center rounded-sm font-mono text-xs font-semibold"
-                        style={{
-                          backgroundColor: teamHex(d.team_colour),
-                          color: onTeam(d.team_colour),
-                        }}
-                      >
-                        {d.driver_number}
-                      </span>
-                      <span className="font-bold tracking-wide uppercase">
-                        {splitName(d.full_name).last}
-                      </span>
-                    </span>
-                  </td>
-                  <td className="hidden truncate px-1 py-2 text-sm text-muted sm:table-cell">
-                    {d.team_name}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-sm tabular">
-                    {d.wins}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular">
-                    {d.points}
-                  </td>
+          <>
+            {standingsLoading && (
+              <p className="px-3 py-4 text-sm text-muted">
+                Đang cộng điểm từ OpenF1 session_result…
+              </p>
+            )}
+            {!standingsLoading && drivers.length === 0 && (
+              <p className="px-3 py-4 text-sm text-muted">
+                Chưa có bảng điểm năm {year}.
+              </p>
+            )}
+            <table className="w-full text-left">
+              <thead className="sticky top-0 bg-surface">
+                <tr className="text-xs tracking-widest text-subtle uppercase">
+                  <th className="px-3 py-2 font-medium">P</th>
+                  <th className="px-1 py-2 font-medium">Driver</th>
+                  <th className="hidden px-1 py-2 font-medium sm:table-cell">
+                    Team
+                  </th>
+                  <th className="px-2 py-2 font-medium text-right">Wins</th>
+                  <th className="px-3 py-2 font-medium text-right">Pts</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {drivers.map((d) => (
+                  <tr key={d.driver_number} className="border-t border-border">
+                    <td className="px-3 py-2 font-mono text-sm tabular text-muted">
+                      {d.position}
+                    </td>
+                    <td className="px-1 py-2">
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="flex size-6 shrink-0 items-center justify-center rounded-sm font-mono text-xs font-semibold"
+                          style={{
+                            backgroundColor: teamHex(d.team_colour),
+                            color: onTeam(d.team_colour),
+                          }}
+                        >
+                          {d.driver_number}
+                        </span>
+                        <span className="font-bold tracking-wide uppercase">
+                          {splitName(d.full_name).last}
+                        </span>
+                      </span>
+                    </td>
+                    <td className="hidden truncate px-1 py-2 text-sm text-muted sm:table-cell">
+                      {d.team_name}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-sm tabular">
+                      {d.wins}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular">
+                      {d.points}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
 
         {tab === "constructors" && (
-          <table className="w-full text-left">
-            <thead className="sticky top-0 bg-surface">
-              <tr className="text-xs tracking-widest text-subtle uppercase">
-                <th className="px-3 py-2 font-medium">P</th>
-                <th className="px-1 py-2 font-medium">Team</th>
-                <th className="px-2 py-2 font-medium text-right">Wins</th>
-                <th className="px-3 py-2 font-medium text-right">Pts</th>
-              </tr>
-            </thead>
-            <tbody>
-              {teams.map((t) => (
-                <tr key={t.team_name} className="border-t border-border">
-                  <td className="px-3 py-2 font-mono text-sm tabular text-muted">
-                    {t.position}
-                  </td>
-                  <td className="px-1 py-2 font-bold tracking-wide uppercase">
-                    {t.team_name}
-                  </td>
-                  <td className="px-2 py-2 text-right font-mono text-sm tabular">
-                    {t.wins}
-                  </td>
-                  <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular">
-                    {t.points}
-                  </td>
+          <>
+            {standingsLoading && (
+              <p className="px-3 py-4 text-sm text-muted">Loading teams…</p>
+            )}
+            <table className="w-full text-left">
+              <thead className="sticky top-0 bg-surface">
+                <tr className="text-xs tracking-widest text-subtle uppercase">
+                  <th className="px-3 py-2 font-medium">P</th>
+                  <th className="px-1 py-2 font-medium">Team</th>
+                  <th className="px-2 py-2 font-medium text-right">Wins</th>
+                  <th className="px-3 py-2 font-medium text-right">Pts</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {teams.map((t) => (
+                  <tr key={t.team_name} className="border-t border-border">
+                    <td className="px-3 py-2 font-mono text-sm tabular text-muted">
+                      {t.position}
+                    </td>
+                    <td className="px-1 py-2 font-bold tracking-wide uppercase">
+                      {t.team_name}
+                    </td>
+                    <td className="px-2 py-2 text-right font-mono text-sm tabular">
+                      {t.wins}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono text-sm font-semibold tabular">
+                      {t.points}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </>
         )}
       </div>
     </div>
