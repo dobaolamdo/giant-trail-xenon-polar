@@ -1,12 +1,12 @@
 name: Pump OpenF1 → MySQL
 
-# Manual: chọn năm (2023–2026 | all) — dùng 1 lần cho lịch sử.
-# Schedule: mỗi ngày chỉ pump 2026 (mùa hiện tại), không đụng 2023–2025.
+# Manual: chọn năm. Schedule: chỉ 2026.
+# /api/pump chậm (OpenF1 + hàng nghìn INSERT) → cần timeout dài, không phải service die.
 on:
   workflow_dispatch:
     inputs:
       year:
-        description: "Year (historical = one-shot; daily job uses 2026 only)"
+        description: "Year (historical one-shot; daily = 2026 only)"
         required: true
         default: "2026"
         type: choice
@@ -17,7 +17,6 @@ on:
           - "2023"
           - "all"
   schedule:
-    # 06:00 UTC mỗi ngày ≈ 13:00 VN — chỉ 2026
     - cron: "0 6 * * *"
 
 jobs:
@@ -28,7 +27,6 @@ jobs:
       - name: Resolve session keys
         id: keys
         run: |
-          # Scheduled run → force 2026 only (save quota / Render time)
           if [ "${{ github.event_name }}" = "schedule" ]; then
             YEAR="2026"
           else
@@ -37,7 +35,6 @@ jobs:
           echo "mode=$YEAR event=${{ github.event_name }}"
           KEYS=""
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2023" ]; then
-            # one-shot historical — skip OpenF1 404 key 9086
             KEYS="$KEYS 7953 7779 7787 9070 9078 9094 9102 9110 9118 9126 9133 9141 9149 9157 9165 9173 9221 9213 9181 9205 9189 9197"
           fi
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2024" ]; then
@@ -52,7 +49,7 @@ jobs:
           echo "keys=$KEYS" >> "$GITHUB_OUTPUT"
           echo "Will pump ($YEAR): $KEYS"
 
-      - name: Pump each race into MySQL
+      - name: Wake Render + pump
         env:
           API: ${{ secrets.PITWALL_API_URL }}
           SECRET: ${{ secrets.PUMP_SECRET }}
@@ -66,37 +63,48 @@ jobs:
           OK=0
           FAIL=0
 
-          curl -sS -m 60 "$API/health" || true
-          sleep 5
+          # Wake free-tier (có thể cold 30–60s)
+          echo "Waking Render…"
+          for i in 1 2 3 4 5; do
+            if curl -sS -m 60 "$API/health" | grep -q ok; then
+              echo "health ok (try $i)"
+              break
+            fi
+            echo "wake try $i…"
+            sleep 10
+          done
+          sleep 8
 
           for KEY in ${{ steps.keys.outputs.keys }}; do
             echo "======== session_key=$KEY ========"
-            CODE=$(curl -sS -m 90 -o /tmp/pump.json -w "%{http_code}" \
+            # Pump ~1–3 phút/race (drivers + 900–1100 laps INSERT)
+            CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
               "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "HTTP $CODE"
-            head -c 300 /tmp/pump.json 2>/dev/null; echo
+            head -c 400 /tmp/pump.json 2>/dev/null; echo
 
             if [ "$CODE" = "200" ]; then
               OK=$((OK+1))
-              sleep 2
+              sleep 3
               continue
             fi
 
-            echo "retry once (15s)…"
-            sleep 15
-            curl -sS -m 30 "$API/health" >/dev/null 2>&1 || true
-            CODE=$(curl -sS -m 90 -o /tmp/pump.json -w "%{http_code}" \
+            # 1 retry after re-wake
+            echo "retry after wake…"
+            curl -sS -m 45 "$API/health" >/dev/null 2>&1 || true
+            sleep 20
+            CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
               "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "retry HTTP $CODE"
-            head -c 200 /tmp/pump.json 2>/dev/null; echo
+            head -c 300 /tmp/pump.json 2>/dev/null; echo
 
             if [ "$CODE" = "200" ]; then
               OK=$((OK+1))
             else
               FAIL=$((FAIL+1))
-              echo "SKIP $KEY after fail"
+              echo "SKIP $KEY"
             fi
-            sleep 2
+            sleep 3
           done
 
           echo "DONE ok=$OK fail=$FAIL"
