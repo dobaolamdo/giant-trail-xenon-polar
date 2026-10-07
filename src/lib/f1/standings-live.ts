@@ -1,4 +1,7 @@
-/** Real driver/constructor points from OpenF1 session_result (official). */
+/**
+ * Championship standings — full season in 1–2 HTTP calls (Jolpica/Ergast).
+ * OpenF1 session_result was rate-limited → only ~3–6 races counted.
+ */
 
 export type DriverStandingRow = {
   position: number;
@@ -19,177 +22,177 @@ export type ConstructorStandingRow = {
   wins: number;
 };
 
-const RACE_KEYS: Record<number, number[]> = {
-  2023: [
-    7953, 7779, 7787, 9070, 9078, 9094, 9102, 9110, 9118, 9126, 9133, 9141,
-    9149, 9157, 9165, 9173, 9221, 9213, 9181, 9205, 9189, 9197,
-  ],
-  2024: [
-    9472, 9480, 9488, 9496, 9673, 9507, 9515, 9523, 9531, 9539, 9550, 9558,
-    9566, 9574, 9582, 9590, 9598, 9606, 9617, 9625, 9636, 9644, 9655, 9662,
-  ],
-  2025: [
-    9693, 9998, 10006, 10014, 10022, 10033, 9987, 9979, 9971, 9963, 9955, 9947,
-    9939, 9928, 9920, 9912, 9904, 9896, 9888, 9877, 9869, 9858, 9850, 9839,
-  ],
-  2026: [
-    11234, 11245, 11253, 11261, 11269, 11280, 11291, 11299, 11307, 11315, 11326,
-    11334, 11342, 11353, 11361, 11369, 11377, 11731, 11388, 11396, 11404, 11412,
-    11420, 11428, 11436,
-  ],
+/** Approximate team colours for UI badges. */
+const TEAM_COLOUR: Record<string, string> = {
+  mclaren: "FF8000",
+  "red bull": "3671C6",
+  redbull: "3671C6",
+  ferrari: "E8002D",
+  mercedes: "27F4D2",
+  alpine: "FF87BC",
+  "aston martin": "229971",
+  astonmartin: "229971",
+  williams: "64C4FF",
+  "haas f1 team": "B6BABD",
+  haas: "B6BABD",
+  "rb f1 team": "6692FF",
+  rb: "6692FF",
+  "racing bulls": "6692FF",
+  sauber: "52E252",
+  "kick sauber": "52E252",
+  alphatauri: "5E8FAA",
+  "alfa romeo": "C92D4B",
 };
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-/** Fetch JSON with retry on 429 / network blips. */
-async function getJson(url: string, tries = 4): Promise<unknown> {
-  for (let i = 0; i < tries; i++) {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 30000);
-    try {
-      const res = await fetch(url, { signal: ctrl.signal });
-      if (res.status === 429) {
-        await sleep(800 * (i + 1));
-        continue;
-      }
-      if (!res.ok) return null;
-      return await res.json();
-    } catch {
-      await sleep(400 * (i + 1));
-    } finally {
-      clearTimeout(t);
-    }
+function teamColour(name: string): string {
+  const k = name.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+  if (TEAM_COLOUR[k]) return TEAM_COLOUR[k]!;
+  for (const [key, col] of Object.entries(TEAM_COLOUR)) {
+    if (k.includes(key) || key.includes(k)) return col;
   }
-  return null;
+  return "888888";
 }
 
-type Acc = {
-  driver_number: number;
-  full_name: string;
-  team_name: string;
-  team_colour: string;
-  code: string;
-  points: number;
-  wins: number;
+/** Known race numbers when Ergast permanentNumber is missing/wrong. */
+const CODE_NUM: Record<string, number> = {
+  VER: 1,
+  PER: 11,
+  NOR: 4,
+  PIA: 81,
+  LEC: 16,
+  SAI: 55,
+  HAM: 44,
+  RUS: 63,
+  ALO: 14,
+  STR: 18,
+  GAS: 10,
+  OCO: 31,
+  ALB: 23,
+  SAR: 2,
+  COL: 43,
+  TSU: 22,
+  RIC: 3,
+  LAW: 30,
+  HUL: 27,
+  MAG: 20,
+  BOT: 77,
+  ZHO: 24,
+  BEA: 50,
+  ANT: 12,
+  DOO: 7,
+  HAD: 6,
+  BOR: 5,
 };
+
+async function getJson(url: string): Promise<unknown> {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 20000);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
 
 export async function fetchYearStandings(year: number): Promise<{
   drivers: DriverStandingRow[];
   teams: ConstructorStandingRow[];
   racesUsed: number;
 }> {
-  const keys = RACE_KEYS[year] ?? [];
-  const bag = new Map<number, Acc>();
+  const [drvRaw, conRaw] = await Promise.all([
+    getJson(`https://api.jolpi.ca/ergast/f1/${year}/driverStandings.json`),
+    getJson(
+      `https://api.jolpi.ca/ergast/f1/${year}/constructorStandings.json`,
+    ),
+  ]);
+
   let racesUsed = 0;
+  const drivers: DriverStandingRow[] = [];
 
-  // Sequential — parallel spam → OpenF1 429 → chỉ còn 2–3 race.
-  for (const sessionKey of keys) {
-    const sr = await getJson(
-      `https://api.openf1.org/v1/session_result?session_key=${sessionKey}`,
-    );
-    if (!Array.isArray(sr) || sr.length === 0) {
-      await sleep(150);
-      continue;
-    }
-    const hasResult = sr.some(
-      (r: any) =>
-        r.position != null || (r.points != null && Number(r.points) > 0),
-    );
-    if (!hasResult) {
-      await sleep(150);
-      continue;
-    }
-    racesUsed++;
-
-    const drivers = await getJson(
-      `https://api.openf1.org/v1/drivers?session_key=${sessionKey}`,
-    );
-    const meta = new Map<
-      number,
-      { name: string; team: string; colour: string; code: string }
-    >();
-    if (Array.isArray(drivers)) {
-      for (const d of drivers as any[]) {
-        if (d.driver_number == null) continue;
-        meta.set(Number(d.driver_number), {
-          name: String(d.full_name || d.broadcast_name || `#${d.driver_number}`),
-          team: String(d.team_name || "Unknown"),
-          colour: String(d.team_colour || "888888").replace(/^#/, ""),
-          code: String(d.name_acronym || d.driver_number),
+  try {
+    const lists =
+      (drvRaw as any)?.MRData?.StandingsTable?.StandingsLists ?? [];
+    if (lists[0]) {
+      racesUsed = Number(lists[0].round) || 0;
+      for (const row of lists[0].DriverStandings ?? []) {
+        const d = row.Driver ?? {};
+        const c = row.Constructors?.[0] ?? {};
+        const code = String(d.code || "").toUpperCase();
+        const permanent = Number(d.permanentNumber);
+        const byCode = CODE_NUM[code];
+        const driver_number =
+          byCode ??
+          (Number.isFinite(permanent) && permanent > 0 ? permanent : 0);
+        const team_name = String(c.name || "Unknown");
+        drivers.push({
+          position: Number(row.position) || drivers.length + 1,
+          driver_number,
+          full_name: `${d.givenName || ""} ${d.familyName || ""}`.trim() || code,
+          team_name,
+          team_colour: teamColour(team_name),
+          code: code || String(driver_number),
+          points: Number(row.points) || 0,
+          wins: Number(row.wins) || 0,
         });
       }
     }
+  } catch {
+    /* */
+  }
 
-    for (const r of sr as any[]) {
-      const num = Number(r.driver_number);
-      if (!num) continue;
-      const pts = Number(r.points ?? 0) || 0;
-      const pos = r.position != null ? Number(r.position) : null;
-      const m = meta.get(num);
-      const cur =
-        bag.get(num) ??
-        ({
-          driver_number: num,
-          full_name: m?.name ?? `#${num}`,
-          team_name: m?.team ?? "Unknown",
-          team_colour: m?.colour ?? "888888",
-          code: m?.code ?? String(num),
-          points: 0,
-          wins: 0,
-        } satisfies Acc);
-      if (m) {
-        cur.full_name = m.name;
-        cur.team_name = m.team;
-        cur.team_colour = m.colour;
-        cur.code = m.code;
+  const teams: ConstructorStandingRow[] = [];
+  try {
+    const lists =
+      (conRaw as any)?.MRData?.StandingsTable?.StandingsLists ?? [];
+    if (lists[0]) {
+      if (!racesUsed) racesUsed = Number(lists[0].round) || 0;
+      for (const row of lists[0].ConstructorStandings ?? []) {
+        const c = row.Constructor ?? {};
+        const team_name = String(c.name || "Unknown");
+        teams.push({
+          position: Number(row.position) || teams.length + 1,
+          team_name,
+          team_colour: teamColour(team_name),
+          points: Number(row.points) || 0,
+          wins: Number(row.wins) || 0,
+        });
       }
-      cur.points += pts;
-      if (pos === 1 && !r.dnf && !r.dsq && !r.dns) cur.wins += 1;
-      bag.set(num, cur);
     }
-
-    await sleep(200);
+  } catch {
+    /* */
   }
 
-  const drivers: DriverStandingRow[] = [...bag.values()]
-    .sort((a, b) => b.points - a.points || b.wins - a.wins)
-    .map((d, i) => ({
-      position: i + 1,
-      driver_number: d.driver_number,
-      full_name: d.full_name,
-      team_name: d.team_name,
-      team_colour: d.team_colour,
-      code: d.code,
-      points: Math.round(d.points * 10) / 10,
-      wins: d.wins,
-    }));
-
-  const teamBag = new Map<
-    string,
-    { team_name: string; team_colour: string; points: number; wins: number }
-  >();
-  for (const d of drivers) {
-    const cur = teamBag.get(d.team_name) ?? {
-      team_name: d.team_name,
-      team_colour: d.team_colour,
-      points: 0,
-      wins: 0,
-    };
-    cur.points += d.points;
-    cur.wins += d.wins;
-    teamBag.set(d.team_name, cur);
+  // Fallback constructors from drivers if API empty
+  if (teams.length === 0 && drivers.length > 0) {
+    const bag = new Map<
+      string,
+      { team_name: string; team_colour: string; points: number; wins: number }
+    >();
+    for (const d of drivers) {
+      const cur = bag.get(d.team_name) ?? {
+        team_name: d.team_name,
+        team_colour: d.team_colour,
+        points: 0,
+        wins: 0,
+      };
+      cur.points += d.points;
+      cur.wins += d.wins;
+      bag.set(d.team_name, cur);
+    }
+    teams.push(
+      ...[...bag.values()]
+        .sort((a, b) => b.points - a.points || b.wins - a.wins)
+        .map((t, i) => ({
+          position: i + 1,
+          ...t,
+          points: Math.round(t.points * 10) / 10,
+        })),
+    );
   }
-  const teams: ConstructorStandingRow[] = [...teamBag.values()]
-    .sort((a, b) => b.points - a.points || b.wins - a.wins)
-    .map((t, i) => ({
-      position: i + 1,
-      team_name: t.team_name,
-      team_colour: t.team_colour,
-      points: Math.round(t.points * 10) / 10,
-      wins: t.wins,
-    }));
 
   return { drivers, teams, racesUsed };
 }
