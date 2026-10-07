@@ -1,7 +1,7 @@
 name: Pump OpenF1 → MySQL
 
 # Manual: chọn năm. Schedule: chỉ 2026.
-# /api/pump chậm (OpenF1 + hàng nghìn INSERT) → cần timeout dài, không phải service die.
+# Tự SKIP session đã có data trong MySQL (đã pump trước).
 on:
   workflow_dispatch:
     inputs:
@@ -16,6 +16,11 @@ on:
           - "2024"
           - "2023"
           - "all"
+      force:
+        description: "Force re-pump even if data exists"
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "0 6 * * *"
 
@@ -29,10 +34,12 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
             YEAR="2026"
+            FORCE="false"
           else
             YEAR="${{ inputs.year }}"
+            FORCE="${{ inputs.force }}"
           fi
-          echo "mode=$YEAR event=${{ github.event_name }}"
+          echo "mode=$YEAR force=$FORCE event=${{ github.event_name }}"
           KEYS=""
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2023" ]; then
             KEYS="$KEYS 7953 7779 7787 9070 9078 9094 9102 9110 9118 9126 9133 9141 9149 9157 9165 9173 9221 9213 9181 9205 9189 9197"
@@ -47,12 +54,14 @@ jobs:
             KEYS="$KEYS 11234 11245 11253 11261 11269 11280 11291 11299 11307 11315 11326 11334 11342 11353 11361 11369 11377 11731 11388 11396 11404 11412 11420 11428 11436"
           fi
           echo "keys=$KEYS" >> "$GITHUB_OUTPUT"
-          echo "Will pump ($YEAR): $KEYS"
+          echo "force=$FORCE" >> "$GITHUB_OUTPUT"
+          echo "Will consider ($YEAR): $KEYS"
 
-      - name: Wake Render + pump
+      - name: Wake Render + pump (skip if already in DB)
         env:
           API: ${{ secrets.PITWALL_API_URL }}
           SECRET: ${{ secrets.PUMP_SECRET }}
+          FORCE: ${{ steps.keys.outputs.force }}
         run: |
           set +e
           if [ -z "$API" ] || [ -z "$SECRET" ]; then
@@ -61,23 +70,53 @@ jobs:
           fi
           API="${API%/}"
           OK=0
+          SKIP=0
           FAIL=0
 
-          # Wake free-tier (có thể cold 30–60s)
           echo "Waking Render…"
           for i in 1 2 3 4 5; do
             if curl -sS -m 60 "$API/health" | grep -q ok; then
               echo "health ok (try $i)"
               break
             fi
-            echo "wake try $i…"
             sleep 10
           done
-          sleep 8
+          sleep 5
+
+          already_pumped() {
+            local KEY="$1"
+            # leaderboard có ≥10 xe → coi như đã có session
+            local N
+            N=$(curl -sS -m 45 "$API/api/leaderboard?session_key=$KEY" 2>/dev/null \
+              | python3 -c "import sys,json
+try:
+ d=json.load(sys.stdin)
+ print(len(d) if isinstance(d,list) else 0)
+except Exception:
+ print(0)" 2>/dev/null || echo 0)
+            if [ "${N:-0}" -ge 10 ]; then
+              return 0
+            fi
+            # hoặc đã có ≥50 lap
+            N=$(curl -sS -m 60 "$API/api/session-laps?session_key=$KEY" 2>/dev/null \
+              | python3 -c "import sys,json
+try:
+ d=json.load(sys.stdin)
+ print(len(d) if isinstance(d,list) else 0)
+except Exception:
+ print(0)" 2>/dev/null || echo 0)
+            [ "${N:-0}" -ge 50 ]
+          }
 
           for KEY in ${{ steps.keys.outputs.keys }}; do
             echo "======== session_key=$KEY ========"
-            # Pump ~1–3 phút/race (drivers + 900–1100 laps INSERT)
+
+            if [ "$FORCE" != "true" ] && already_pumped "$KEY"; then
+              echo "SKIP already in MySQL"
+              SKIP=$((SKIP+1))
+              continue
+            fi
+
             CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
               "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "HTTP $CODE"
@@ -89,10 +128,9 @@ jobs:
               continue
             fi
 
-            # 1 retry after re-wake
             echo "retry after wake…"
             curl -sS -m 45 "$API/health" >/dev/null 2>&1 || true
-            sleep 20
+            sleep 15
             CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
               "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "retry HTTP $CODE"
@@ -102,11 +140,12 @@ jobs:
               OK=$((OK+1))
             else
               FAIL=$((FAIL+1))
-              echo "SKIP $KEY"
+              echo "FAIL $KEY"
             fi
             sleep 3
           done
 
-          echo "DONE ok=$OK fail=$FAIL"
-          if [ "$OK" -eq 0 ]; then exit 1; fi
+          echo "DONE pumped=$OK skipped=$SKIP failed=$FAIL"
+          # success if anything pumped OR everything already present
+          if [ "$OK" -eq 0 ] && [ "$SKIP" -eq 0 ]; then exit 1; fi
           exit 0
