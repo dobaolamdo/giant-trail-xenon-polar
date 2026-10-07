@@ -51,10 +51,8 @@ jobs:
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2026" ]; then
             KEYS="$KEYS 11234 11245 11253 11261 11269 11280 11291 11299 11307 11315 11326 11334 11342 11353 11361 11369 11377 11731 11388 11396 11404 11412 11420 11428 11436"
           fi
-          {
-            echo "keys=$KEYS"
-            echo "force=$FORCE"
-          } >> "$GITHUB_OUTPUT"
+          echo "keys=$KEYS" >> "$GITHUB_OUTPUT"
+          echo "force=$FORCE" >> "$GITHUB_OUTPUT"
 
       - name: Wake Render and pump
         env:
@@ -72,6 +70,12 @@ jobs:
           OK=0
           SKIP=0
           FAIL=0
+          PYCOUNT='import sys,json
+try:
+ d=json.load(sys.stdin)
+ print(len(d) if isinstance(d,list) else 0)
+except Exception:
+ print(0)'
 
           echo "Waking Render..."
           for i in 1 2 3 4 5; do
@@ -87,12 +91,7 @@ jobs:
             echo "======== session_key=$KEY ========"
 
             if [ "$FORCE" != "true" ]; then
-              LB_N=$(curl -sS -m 45 "$API/api/leaderboard?session_key=$KEY" | python3 -c 'import sys,json
-try:
-  d=json.load(sys.stdin)
-  print(len(d) if isinstance(d,list) else 0)
-except Exception:
-  print(0)')
+              LB_N=$(curl -sS -m 45 "$API/api/leaderboard?session_key=$KEY" | python3 -c "$PYCOUNT")
               if [ "${LB_N:-0}" -ge 10 ]; then
                 echo "SKIP already in MySQL (leaderboard=$LB_N)"
                 SKIP=$((SKIP + 1))
@@ -100,8 +99,7 @@ except Exception:
               fi
             fi
 
-            CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
-              "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
+            CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "HTTP $CODE"
             head -c 400 /tmp/pump.json 2>/dev/null || true
             echo
@@ -115,8 +113,7 @@ except Exception:
             echo "retry after wake..."
             curl -sS -m 45 "$API/health" >/dev/null 2>&1 || true
             sleep 15
-            CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
-              "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
+            CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "retry HTTP $CODE"
             head -c 300 /tmp/pump.json 2>/dev/null || true
             echo
