@@ -17,7 +17,7 @@ on:
 jobs:
   pump:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 360
     steps:
       - name: Resolve session keys
         id: keys
@@ -25,7 +25,8 @@ jobs:
           YEAR="${{ inputs.year }}"
           KEYS=""
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2023" ]; then
-            KEYS="$KEYS 7953 7779 7787 9070 9078 9086 9094 9102 9110 9118 9126 9133 9141 9149 9157 9165 9173 9221 9213 9181 9205 9189 9197"
+            # skip known-bad 9086 (OpenF1 404 drivers)
+            KEYS="$KEYS 7953 7779 7787 9070 9078 9094 9102 9110 9118 9126 9133 9141 9149 9157 9165 9173 9221 9213 9181 9205 9189 9197"
           fi
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2024" ]; then
             KEYS="$KEYS 9472 9480 9488 9496 9673 9507 9515 9523 9531 9539 9550 9558 9566 9574 9582 9590 9598 9606 9617 9625 9636 9644 9655 9662"
@@ -41,7 +42,7 @@ jobs:
           API: ${{ secrets.PITWALL_API_URL }}
           SECRET: ${{ secrets.PUMP_SECRET }}
         run: |
-          set -e
+          set +e
           if [ -z "$API" ] || [ -z "$SECRET" ]; then
             echo "Missing secrets PITWALL_API_URL or PUMP_SECRET"
             exit 1
@@ -49,28 +50,44 @@ jobs:
           API="${API%/}"
           OK=0
           FAIL=0
+          SKIP=0
+
+          # wake Render once
+          curl -sS -m 60 "$API/health" || true
+          sleep 5
+
           for KEY in ${{ steps.keys.outputs.keys }}; do
             echo "======== session_key=$KEY ========"
-            # wake Render (cold start)
-            curl -sS -m 30 "$API/health" >/dev/null || true
-            sleep 2
-            CODE=$(curl -sS -m 300 -o /tmp/pump.json -w "%{http_code}" \
+            CODE=$(curl -sS -m 90 -o /tmp/pump.json -w "%{http_code}" \
               "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "HTTP $CODE"
-            head -c 400 /tmp/pump.json; echo
+            head -c 300 /tmp/pump.json 2>/dev/null; echo
+
+            if [ "$CODE" = "200" ]; then
+              OK=$((OK+1))
+              sleep 2
+              continue
+            fi
+
+            # one short retry only (Render cold / blip)
+            echo "retry once (15s)…"
+            sleep 15
+            curl -sS -m 30 "$API/health" >/dev/null 2>&1 || true
+            CODE=$(curl -sS -m 90 -o /tmp/pump.json -w "%{http_code}" \
+              "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
+            echo "retry HTTP $CODE"
+            head -c 200 /tmp/pump.json 2>/dev/null; echo
+
             if [ "$CODE" = "200" ]; then
               OK=$((OK+1))
             else
               FAIL=$((FAIL+1))
-              echo "retry once after wake…"
-              sleep 8
-              CODE=$(curl -sS -m 300 -o /tmp/pump.json -w "%{http_code}" \
-                "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
-              echo "retry HTTP $CODE"
-              head -c 200 /tmp/pump.json; echo
-              if [ "$CODE" = "200" ]; then OK=$((OK+1)); FAIL=$((FAIL-1)); fi
+              echo "SKIP $KEY after fail"
             fi
-            sleep 3
+            sleep 2
           done
+
           echo "DONE ok=$OK fail=$FAIL"
-          if [ "$FAIL" -gt 5 ]; then exit 1; fi
+          # soft fail — partial pump is still useful
+          if [ "$OK" -eq 0 ]; then exit 1; fi
+          exit 0
