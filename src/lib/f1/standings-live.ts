@@ -19,7 +19,6 @@ export type ConstructorStandingRow = {
   wins: number;
 };
 
-/** Race session_keys used by pump workflow. */
 const RACE_KEYS: Record<number, number[]> = {
   2023: [
     7953, 7779, 7787, 9070, 9078, 9094, 9102, 9110, 9118, 9126, 9133, 9141,
@@ -40,18 +39,30 @@ const RACE_KEYS: Record<number, number[]> = {
   ],
 };
 
-async function getJson(url: string): Promise<unknown> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 25000);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) return null;
-    return await res.json();
-  } catch {
-    return null;
-  } finally {
-    clearTimeout(t);
+function sleep(ms: number) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/** Fetch JSON with retry on 429 / network blips. */
+async function getJson(url: string, tries = 4): Promise<unknown> {
+  for (let i = 0; i < tries; i++) {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 30000);
+    try {
+      const res = await fetch(url, { signal: ctrl.signal });
+      if (res.status === 429) {
+        await sleep(800 * (i + 1));
+        continue;
+      }
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      await sleep(400 * (i + 1));
+    } finally {
+      clearTimeout(t);
+    }
   }
+  return null;
 }
 
 type Acc = {
@@ -64,26 +75,6 @@ type Acc = {
   wins: number;
 };
 
-/** Parallel with limit. */
-async function mapPool<T, R>(
-  items: T[],
-  limit: number,
-  fn: (item: T) => Promise<R>,
-): Promise<R[]> {
-  const out: R[] = new Array(items.length);
-  let i = 0;
-  async function worker() {
-    while (i < items.length) {
-      const idx = i++;
-      out[idx] = await fn(items[idx]!);
-    }
-  }
-  await Promise.all(
-    Array.from({ length: Math.min(limit, items.length) }, () => worker()),
-  );
-  return out;
-}
-
 export async function fetchYearStandings(year: number): Promise<{
   drivers: DriverStandingRow[];
   teams: ConstructorStandingRow[];
@@ -93,27 +84,28 @@ export async function fetchYearStandings(year: number): Promise<{
   const bag = new Map<number, Acc>();
   let racesUsed = 0;
 
-  const results = await mapPool(keys, 4, async (sessionKey) => {
-    const [sr, drivers] = await Promise.all([
-      getJson(
-        `https://api.openf1.org/v1/session_result?session_key=${sessionKey}`,
-      ),
-      getJson(
-        `https://api.openf1.org/v1/drivers?session_key=${sessionKey}`,
-      ),
-    ]);
-    return { sessionKey, sr, drivers };
-  });
-
-  for (const { sr, drivers } of results) {
-    if (!Array.isArray(sr) || sr.length === 0) continue;
-    // only count if at least one classified with points or position
-    const hasResult = sr.some(
-      (r: any) => r.position != null || (r.points != null && Number(r.points) > 0),
+  // Sequential — parallel spam → OpenF1 429 → chỉ còn 2–3 race.
+  for (const sessionKey of keys) {
+    const sr = await getJson(
+      `https://api.openf1.org/v1/session_result?session_key=${sessionKey}`,
     );
-    if (!hasResult) continue;
+    if (!Array.isArray(sr) || sr.length === 0) {
+      await sleep(150);
+      continue;
+    }
+    const hasResult = sr.some(
+      (r: any) =>
+        r.position != null || (r.points != null && Number(r.points) > 0),
+    );
+    if (!hasResult) {
+      await sleep(150);
+      continue;
+    }
     racesUsed++;
 
+    const drivers = await getJson(
+      `https://api.openf1.org/v1/drivers?session_key=${sessionKey}`,
+    );
     const meta = new Map<
       number,
       { name: string; team: string; colour: string; code: string }
@@ -157,6 +149,8 @@ export async function fetchYearStandings(year: number): Promise<{
       if (pos === 1 && !r.dnf && !r.dsq && !r.dns) cur.wins += 1;
       bag.set(num, cur);
     }
+
+    await sleep(200);
   }
 
   const drivers: DriverStandingRow[] = [...bag.values()]
