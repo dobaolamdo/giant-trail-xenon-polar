@@ -1,19 +1,24 @@
-name: Pump all races OpenF1 → MySQL
+name: Pump OpenF1 → MySQL
 
+# Manual: chọn năm (2023–2026 | all) — dùng 1 lần cho lịch sử.
+# Schedule: mỗi ngày chỉ pump 2026 (mùa hiện tại), không đụng 2023–2025.
 on:
   workflow_dispatch:
     inputs:
       year:
-        description: "Year to pump (2023 | 2024 | 2025 | 2026 | all)"
+        description: "Year (historical = one-shot; daily job uses 2026 only)"
         required: true
-        default: "2024"
+        default: "2026"
         type: choice
         options:
+          - "2026"
+          - "2025"
           - "2024"
           - "2023"
-          - "2025"
-          - "2026"
           - "all"
+  schedule:
+    # 06:00 UTC mỗi ngày ≈ 13:00 VN — chỉ 2026
+    - cron: "0 6 * * *"
 
 jobs:
   pump:
@@ -23,10 +28,16 @@ jobs:
       - name: Resolve session keys
         id: keys
         run: |
-          YEAR="${{ inputs.year }}"
+          # Scheduled run → force 2026 only (save quota / Render time)
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            YEAR="2026"
+          else
+            YEAR="${{ inputs.year }}"
+          fi
+          echo "mode=$YEAR event=${{ github.event_name }}"
           KEYS=""
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2023" ]; then
-            # skip known-bad 9086 (OpenF1 404 drivers)
+            # one-shot historical — skip OpenF1 404 key 9086
             KEYS="$KEYS 7953 7779 7787 9070 9078 9094 9102 9110 9118 9126 9133 9141 9149 9157 9165 9173 9221 9213 9181 9205 9189 9197"
           fi
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2024" ]; then
@@ -39,7 +50,7 @@ jobs:
             KEYS="$KEYS 11234 11245 11253 11261 11269 11280 11291 11299 11307 11315 11326 11334 11342 11353 11361 11369 11377 11731 11388 11396 11404 11412 11420 11428 11436"
           fi
           echo "keys=$KEYS" >> "$GITHUB_OUTPUT"
-          echo "Will pump: $KEYS"
+          echo "Will pump ($YEAR): $KEYS"
 
       - name: Pump each race into MySQL
         env:
