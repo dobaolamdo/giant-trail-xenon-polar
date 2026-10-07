@@ -1,12 +1,10 @@
-name: Pump OpenF1 → MySQL
+name: Pump OpenF1 to MySQL
 
-# Manual: chọn năm. Schedule: chỉ 2026.
-# Tự SKIP session đã có data trong MySQL (đã pump trước).
 on:
   workflow_dispatch:
     inputs:
       year:
-        description: "Year (historical one-shot; daily = 2026 only)"
+        description: "Year (historical one-shot; daily uses 2026 only)"
         required: true
         default: "2026"
         type: choice
@@ -39,7 +37,7 @@ jobs:
             YEAR="${{ inputs.year }}"
             FORCE="${{ inputs.force }}"
           fi
-          echo "mode=$YEAR force=$FORCE event=${{ github.event_name }}"
+          echo "mode=$YEAR force=$FORCE"
           KEYS=""
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2023" ]; then
             KEYS="$KEYS 7953 7779 7787 9070 9078 9094 9102 9110 9118 9126 9133 9141 9149 9157 9165 9173 9221 9213 9181 9205 9189 9197"
@@ -53,15 +51,17 @@ jobs:
           if [ "$YEAR" = "all" ] || [ "$YEAR" = "2026" ]; then
             KEYS="$KEYS 11234 11245 11253 11261 11269 11280 11291 11299 11307 11315 11326 11334 11342 11353 11361 11369 11377 11731 11388 11396 11404 11412 11420 11428 11436"
           fi
-          echo "keys=$KEYS" >> "$GITHUB_OUTPUT"
-          echo "force=$FORCE" >> "$GITHUB_OUTPUT"
-          echo "Will consider ($YEAR): $KEYS"
+          {
+            echo "keys=$KEYS"
+            echo "force=$FORCE"
+          } >> "$GITHUB_OUTPUT"
 
-      - name: Wake Render + pump (skip if already in DB)
+      - name: Wake Render and pump
         env:
           API: ${{ secrets.PITWALL_API_URL }}
           SECRET: ${{ secrets.PUMP_SECRET }}
           FORCE: ${{ steps.keys.outputs.force }}
+          KEYS: ${{ steps.keys.outputs.keys }}
         run: |
           set +e
           if [ -z "$API" ] || [ -z "$SECRET" ]; then
@@ -73,79 +73,65 @@ jobs:
           SKIP=0
           FAIL=0
 
-          echo "Waking Render…"
+          echo "Waking Render..."
           for i in 1 2 3 4 5; do
             if curl -sS -m 60 "$API/health" | grep -q ok; then
-              echo "health ok (try $i)"
+              echo "health ok try=$i"
               break
             fi
             sleep 10
           done
           sleep 5
 
-          already_pumped() {
-            local KEY="$1"
-            # leaderboard có ≥10 xe → coi như đã có session
-            local N
-            N=$(curl -sS -m 45 "$API/api/leaderboard?session_key=$KEY" 2>/dev/null \
-              | python3 -c "import sys,json
-try:
- d=json.load(sys.stdin)
- print(len(d) if isinstance(d,list) else 0)
-except Exception:
- print(0)" 2>/dev/null || echo 0)
-            if [ "${N:-0}" -ge 10 ]; then
-              return 0
-            fi
-            # hoặc đã có ≥50 lap
-            N=$(curl -sS -m 60 "$API/api/session-laps?session_key=$KEY" 2>/dev/null \
-              | python3 -c "import sys,json
-try:
- d=json.load(sys.stdin)
- print(len(d) if isinstance(d,list) else 0)
-except Exception:
- print(0)" 2>/dev/null || echo 0)
-            [ "${N:-0}" -ge 50 ]
-          }
-
-          for KEY in ${{ steps.keys.outputs.keys }}; do
+          for KEY in $KEYS; do
             echo "======== session_key=$KEY ========"
 
-            if [ "$FORCE" != "true" ] && already_pumped "$KEY"; then
-              echo "SKIP already in MySQL"
-              SKIP=$((SKIP+1))
-              continue
+            if [ "$FORCE" != "true" ]; then
+              LB_N=$(curl -sS -m 45 "$API/api/leaderboard?session_key=$KEY" | python3 -c 'import sys,json
+try:
+  d=json.load(sys.stdin)
+  print(len(d) if isinstance(d,list) else 0)
+except Exception:
+  print(0)')
+              if [ "${LB_N:-0}" -ge 10 ]; then
+                echo "SKIP already in MySQL (leaderboard=$LB_N)"
+                SKIP=$((SKIP + 1))
+                continue
+              fi
             fi
 
             CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
               "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "HTTP $CODE"
-            head -c 400 /tmp/pump.json 2>/dev/null; echo
+            head -c 400 /tmp/pump.json 2>/dev/null || true
+            echo
 
             if [ "$CODE" = "200" ]; then
-              OK=$((OK+1))
+              OK=$((OK + 1))
               sleep 3
               continue
             fi
 
-            echo "retry after wake…"
+            echo "retry after wake..."
             curl -sS -m 45 "$API/health" >/dev/null 2>&1 || true
             sleep 15
             CODE=$(curl -sS -m 240 -o /tmp/pump.json -w "%{http_code}" \
               "$API/api/pump?secret=$SECRET&session_key=$KEY" || echo "000")
             echo "retry HTTP $CODE"
-            head -c 300 /tmp/pump.json 2>/dev/null; echo
+            head -c 300 /tmp/pump.json 2>/dev/null || true
+            echo
 
             if [ "$CODE" = "200" ]; then
-              OK=$((OK+1))
+              OK=$((OK + 1))
             else
-              FAIL=$((FAIL+1))
+              FAIL=$((FAIL + 1))
               echo "FAIL $KEY"
             fi
             sleep 3
           done
 
           echo "DONE pumped=$OK skipped=$SKIP failed=$FAIL"
-          # success if anything pumped OR everything already present
-          if [ "$OK" -eq 0 ] && [ "$SKIP" -eq 0 ]; then exit 1; fi
+          if [ "$OK" -eq 0 ] && [ "$SKIP" -eq 0 ]; then
+            exit 1
+          fi
           exit 0
