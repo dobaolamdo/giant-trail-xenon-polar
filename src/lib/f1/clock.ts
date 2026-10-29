@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { RACE } from "./simulate";
 
-const SPEEDS = [8, 16, 32, 64] as const;
+const SPEEDS = [1, 2, 4, 8, 16] as const;
 export type RaceSpeed = (typeof SPEEDS)[number];
 
 const START_LAP = 18;
@@ -30,7 +30,7 @@ export const useRaceClock = create<RaceClock>((set, get) => ({
   elapsed: liveStart,
   duration: RACE.duration,
   playing: true,
-  speed: 32,
+  speed: 1,
   selectedDriver: 4,
   setElapsed: (t) => {
     const duration = get().duration;

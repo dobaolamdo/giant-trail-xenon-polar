@@ -15,11 +15,14 @@ import {
   type RankedRow,
 } from "@/lib/f1/rank";
 import { Leaderboard } from "./leaderboard";
+import { LiveCountdownBanner } from "./live-countdown";
 import { ArchiveView } from "./archive";
 import { SchemaView } from "./schema-view";
 import { DriverDetail } from "./driver-detail";
 import { SqlPanel } from "./sql-panel";
 import { StintPitPanel } from "./stint-pit-panel";
+import { TelemetryComparePanel } from "./telemetry-compare";
+import { TrackMapPanel } from "./track-map";
 import {
   applyLapCompounds,
   applyTyreAndPit,
@@ -40,7 +43,7 @@ import { cn } from "@/lib/utils";
 const API =
   import.meta.env.VITE_API_URL || "https://f1-dashboard-sbrl.onrender.com";
 
-const SPEEDS = [8, 16, 32, 64] as const;
+const SPEEDS = [1, 2, 4, 8, 16] as const;
 type Speed = (typeof SPEEDS)[number];
 
 function isOpenF1Key(k: number) {
@@ -211,6 +214,253 @@ function parseLaps(data: unknown): RawLap[] {
     }));
 }
 
+function computeDriverLiveLap(
+  laps: RawLap[],
+  driverNumber: number,
+  elapsedSec: number,
+  is2026: boolean,
+  sessionBests: { minS1: number; minS2: number; minS3: number },
+  driverRank: number = 1
+) {
+  const driverLaps = laps
+    .filter((l) => l.driver_number === driverNumber && num(l.lap_duration) != null && num(l.lap_duration)! > 0)
+    .sort((a, b) => a.lap_number - b.lap_number);
+
+  // Staggered grid slot offset (P1 is at 0.995, P2 at 0.989, P3 at 0.983, etc., behind start line)
+  const gridFraction = (1.0 - (driverRank - 1) * 0.006) % 1.0;
+
+  // 1. GRID STANDING / LIGHTS COUNTDOWN (elapsedSec <= 3.0s):
+  // All cars are stationary on the grid, holding clutch & revs at 11,200 RPM
+  if (elapsedSec <= 3.0) {
+    return {
+      s1: null,
+      s2: null,
+      s3: null,
+      s1_state: "pending" as const,
+      s2_state: "pending" as const,
+      s3_state: "pending" as const,
+      speed: 0,
+      gear: 1 as const,
+      rpm: 11200 + Math.round(Math.sin(driverNumber * 3) * 250),
+      throttle: 100,
+      brake: 100,
+      drs: 0,
+      overtake_mode: is2026 ? false : undefined,
+      battery_soc: is2026 ? 100 : undefined,
+      deployment_kw: is2026 ? 0 : undefined,
+      is_clipping: is2026 ? false : undefined,
+      aero_mode: is2026 ? ("Z-MODE" as const) : undefined,
+      lap_fraction: gridFraction,
+    };
+  }
+
+  // 2. RACE LAUNCH OFF THE LINE (3.0s < elapsedSec < 7.5s):
+  // Green flag / Lights out! Accelerate from 0 -> 215 km/h with realistic F1 launch curve
+  if (elapsedSec < 7.5) {
+    const launchT = elapsedSec - 3.0; // 0s to 4.5s
+    const reactionDelay = 0.15 + (driverRank - 1) * 0.035;
+    const accelT = Math.max(0, launchT - reactionDelay);
+
+    const speed = Math.round(Math.min(215, accelT * 48));
+    const gear = speed === 0 ? 1 : speed < 65 ? 1 : speed < 115 ? 2 : speed < 165 ? 3 : 4;
+    const rpm = speed === 0 ? 11200 : Math.round(8600 + (speed % 50) * 65);
+
+    // Realistic roll-off forward from grid slot
+    const launchDistFrac = accelT * accelT * 0.0012;
+    const lap_fraction = (gridFraction + launchDistFrac) % 1.0;
+
+    return {
+      s1: Math.max(0, elapsedSec - 3.0),
+      s2: null,
+      s3: null,
+      s1_state: "active" as const,
+      s2_state: "pending" as const,
+      s3_state: "pending" as const,
+      speed,
+      gear,
+      rpm,
+      throttle: 100,
+      brake: 0,
+      drs: 0,
+      overtake_mode: is2026 ? false : undefined,
+      battery_soc: is2026 ? Math.round(100 - accelT * 2.5) : undefined,
+      deployment_kw: is2026 ? 350 : undefined,
+      is_clipping: is2026 ? false : undefined,
+      aero_mode: is2026 ? ("Z-MODE" as const) : undefined,
+      lap_fraction,
+    };
+  }
+
+  // 3. RACING ON TRACK (FLYING LAP):
+  let cum = 0;
+  let activeLap: RawLap = driverLaps[0] || ({} as RawLap);
+  let inLapSec = elapsedSec - 3.0;
+  let driverPbS1 = Infinity;
+  let driverPbS2 = Infinity;
+  let driverPbS3 = Infinity;
+
+  for (const l of driverLaps) {
+    const dur = num(l.lap_duration) || 90;
+    if (cum + dur <= (elapsedSec - 3.0)) {
+      cum += dur;
+      if (num(l.duration_sector_1) && num(l.duration_sector_1)! < driverPbS1) driverPbS1 = num(l.duration_sector_1)!;
+      if (num(l.duration_sector_2) && num(l.duration_sector_2)! < driverPbS2) driverPbS2 = num(l.duration_sector_2)!;
+      if (num(l.duration_sector_3) && num(l.duration_sector_3)! < driverPbS3) driverPbS3 = num(l.duration_sector_3)!;
+    } else {
+      activeLap = l;
+      inLapSec = Math.max(0, (elapsedSec - 3.0) - cum);
+      break;
+    }
+  }
+
+  // Realistic fallback if driverLaps has no timing
+  if (driverLaps.length === 0) {
+    inLapSec = Math.max(0, elapsedSec - 3.0 + (driverRank - 1) * 0.5);
+  }
+
+  const s1Target = num(activeLap?.duration_sector_1) || 30.5;
+  const s2Target = num(activeLap?.duration_sector_2) || 38.0;
+  const s3Target = num(activeLap?.duration_sector_3) || 25.5;
+  const lapTotal = s1Target + s2Target + s3Target || 94.0;
+
+  let s1: number | null = null;
+  let s2: number | null = null;
+  let s3: number | null = null;
+  let s1_state: "active" | "done" | "pb" | "purple" | "pending" = "pending";
+  let s2_state: "active" | "done" | "pb" | "purple" | "pending" = "pending";
+  let s3_state: "active" | "done" | "pb" | "purple" | "pending" = "pending";
+
+  if (inLapSec < s1Target) {
+    s1 = inLapSec;
+    s1_state = "active";
+  } else if (inLapSec < s1Target + s2Target) {
+    s1 = s1Target;
+    s1_state = s1Target <= sessionBests.minS1 ? "purple" : s1Target <= driverPbS1 ? "pb" : "done";
+    s2 = inLapSec - s1Target;
+    s2_state = "active";
+  } else {
+    s1 = s1Target;
+    s1_state = s1Target <= sessionBests.minS1 ? "purple" : s1Target <= driverPbS1 ? "pb" : "done";
+    s2 = s2Target;
+    s2_state = s2Target <= sessionBests.minS2 ? "purple" : s2Target <= driverPbS2 ? "pb" : "done";
+    if (inLapSec < lapTotal) {
+      s3 = inLapSec - (s1Target + s2Target);
+      s3_state = "active";
+    } else {
+      s3 = s3Target;
+      s3_state = s3Target <= sessionBests.minS3 ? "purple" : s3Target <= driverPbS3 ? "pb" : "done";
+    }
+  }
+
+  // Lap fraction [0, 1] determines exact track position
+  const lapFrac = lapTotal > 0 ? (inLapSec % lapTotal) / lapTotal : 0;
+
+  // Track layout zones:
+  // Straights: 0.25 - 0.42 (Back straight) and 0.92 - 0.10 (Pit straight)
+  const isMainStraight = (lapFrac >= 0.25 && lapFrac <= 0.42) || (lapFrac >= 0.92 || lapFrac <= 0.10);
+  // Heavy Braking zones: into Turn 1 (0.10 - 0.16) and Turn 7 (0.42 - 0.48)
+  const isHeavyBraking = (lapFrac > 0.10 && lapFrac < 0.16) || (lapFrac > 0.42 && lapFrac < 0.48);
+
+  let speed = 210;
+  let gear: number | string = 5;
+  let rpm = 10500;
+  let throttle = 85;
+  let brake = 0;
+  let drs = 0;
+  let overtake_mode = false;
+  let battery_soc: number | undefined = undefined;
+  let deployment_kw: number | undefined = undefined;
+  let is_clipping: boolean | undefined = undefined;
+  let aero_mode: ("X-MODE" | "Z-MODE") | undefined = undefined;
+
+  if (isMainStraight) {
+    const straightProgress = (lapFrac >= 0.25 && lapFrac <= 0.42)
+      ? (lapFrac - 0.25) / 0.17
+      : lapFrac >= 0.92
+        ? (lapFrac - 0.92) / 0.18
+        : (lapFrac + 0.08) / 0.18;
+
+    speed = Math.round(230 + straightProgress * 105 + (driverNumber === 1 ? 5 : 0));
+    gear = speed > 290 ? 8 : speed > 255 ? 7 : 6;
+    rpm = Math.round(10800 + (speed % 30) * 45);
+    throttle = 100;
+    brake = 0;
+
+    if (is2026) {
+      aero_mode = speed > 260 ? "X-MODE" : "Z-MODE";
+      const calcBattery = Math.max(10, Math.round(88 - straightProgress * 74));
+      battery_soc = calcBattery;
+
+      // SUPER CLIPPING DETECTION:
+      // Battery depleted below 16% on high speed straight (>310 km/h) -> MGU-K drops to 0 kW, speed de-rates
+      if (straightProgress > 0.78 && calcBattery <= 16 && speed > 310) {
+        is_clipping = true;
+        deployment_kw = 0;
+        speed = Math.round(318 + Math.sin(elapsedSec * 2) * 2);
+        rpm = 10900;
+      } else {
+        is_clipping = false;
+        deployment_kw = 350;
+        overtake_mode = straightProgress > 0.35 && (driverRank <= 4 || driverNumber === 4 || driverNumber === 1);
+      }
+    } else {
+      drs = straightProgress > 0.2 ? 1 : 0;
+    }
+  } else if (isHeavyBraking) {
+    const brakeProgress = (lapFrac > 0.10 && lapFrac < 0.16) ? (lapFrac - 0.10) / 0.06 : (lapFrac - 0.42) / 0.06;
+    speed = Math.max(82, Math.round(320 - brakeProgress * 230));
+    gear = speed < 95 ? 2 : speed < 140 ? 3 : speed < 190 ? 4 : speed < 240 ? 5 : 6;
+    rpm = Math.round(9200 + (speed % 40) * 50);
+    throttle = 0;
+    brake = Math.round(85 + (1 - brakeProgress) * 15);
+
+    if (is2026) {
+      aero_mode = "Z-MODE";
+      deployment_kw = -350; // 350kW Regen harvest
+      battery_soc = Math.min(95, Math.round(20 + brakeProgress * 65));
+      is_clipping = false;
+      overtake_mode = false;
+    }
+  } else {
+    // Corners / Technical sections
+    const cornerWave = Math.sin(lapFrac * Math.PI * 12);
+    speed = Math.round(135 + cornerWave * 55 + (driverNumber === 1 ? 6 : 0));
+    gear = speed < 110 ? 2 : speed < 155 ? 3 : speed < 195 ? 4 : 5;
+    rpm = Math.round(9400 + Math.abs(cornerWave) * 1800);
+    throttle = Math.round(40 + Math.max(0, cornerWave) * 55);
+    brake = cornerWave < -0.6 ? 40 : 0;
+
+    if (is2026) {
+      aero_mode = "Z-MODE";
+      deployment_kw = throttle > 60 ? 180 : 60;
+      battery_soc = Math.round(55 + Math.sin(lapFrac * 6) * 15);
+      is_clipping = false;
+      overtake_mode = false;
+    }
+  }
+
+  return {
+    s1,
+    s2,
+    s3,
+    s1_state,
+    s2_state,
+    s3_state,
+    speed,
+    gear,
+    rpm,
+    throttle,
+    brake,
+    drs,
+    overtake_mode: is2026 ? overtake_mode : undefined,
+    battery_soc: is2026 ? battery_soc : undefined,
+    deployment_kw: is2026 ? deployment_kw : undefined,
+    is_clipping: is2026 ? is_clipping : undefined,
+    aero_mode: is2026 ? aero_mode : undefined,
+    lap_fraction: lapFrac,
+  };
+}
+
 export function PitwallShell() {
   const sessionKey = usePitwall((s) => s.sessionKey);
   const view = usePitwall((s) => s.view);
@@ -227,12 +477,55 @@ export function PitwallShell() {
   const [elapsedSec, setElapsedSec] = useState(0);
   const [durationSec, setDurationSec] = useState(0);
   const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState<Speed>(16);
+  const [speed, setSpeed] = useState<Speed>(1);
   const [selected, setSelected] = useState(1);
   const [finalBoard, setFinalBoard] = useState<LeaderboardRow[] | null>(null);
-  const [side, setSide] = useState<"driver" | "stints" | "sql">("driver");
+  const [side, setSide] = useState<"driver" | "stints" | "sql" | "telemetry" | "track">("driver");
   const [stints, setStints] = useState<Stint[]>([]);
   const [pits, setPits] = useState<Pit[]>([]);
+  const [sessionMeta, setSessionMeta] = useState<{
+    meeting_name?: string;
+    circuit_short_name?: string;
+    country_name?: string;
+    year?: number;
+  } | null>(null);
+  const [weatherData, setWeatherData] = useState<{
+    air_temperature?: number;
+    track_temperature?: number;
+    humidity?: number;
+    wind_speed?: number;
+    rainfall?: number;
+  } | null>(null);
+  const [showCountdown, setShowCountdown] = useState(false);
+  const [sideWidth, setSideWidth] = useState<number>(440);
+  const [isDragging, setIsDragging] = useState<boolean>(false);
+  const [isMaximized, setIsMaximized] = useState<boolean>(false);
+
+  const startResizing = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      const newWidth = window.innerWidth - e.clientX - 24;
+      const clamped = Math.max(320, Math.min(window.innerWidth * 0.72, newWidth));
+      setSideWidth(clamped);
+    };
+
+    const handleMouseUp = () => {
+      setIsDragging(false);
+    };
+
+    window.addEventListener("mousemove", handleMouseMove);
+    window.addEventListener("mouseup", handleMouseUp);
+    return () => {
+      window.removeEventListener("mousemove", handleMouseMove);
+      window.removeEventListener("mouseup", handleMouseUp);
+    };
+  }, [isDragging]);
 
   const maxLapRef = useRef(0);
   maxLapRef.current = maxLap;
@@ -240,7 +533,7 @@ export function PitwallShell() {
   durationRef.current = durationSec;
   const elapsedRef = useRef(0);
   elapsedRef.current = elapsedSec;
-  const speedRef = useRef<Speed>(16);
+  const speedRef = useRef<Speed>(1);
   speedRef.current = speed;
 
   useEffect(() => {
@@ -290,6 +583,53 @@ export function PitwallShell() {
 
       setStints(parseStints(stintsData));
       setPits(parsePits(pitsData));
+
+      // Resolve Session & Circuit Metadata
+      if (sessionKey === BAKU_RACE_KEY) {
+        setSessionMeta({
+          meeting_name: "Azerbaijan Grand Prix",
+          circuit_short_name: "Baku City Circuit",
+          country_name: "Azerbaijan",
+          year: 2026,
+        });
+      } else if (sessionKey === 9606) {
+        setSessionMeta({
+          meeting_name: "Singapore Grand Prix",
+          circuit_short_name: "Marina Bay",
+          country_name: "Singapore",
+          year: 2024,
+        });
+      } else {
+        fetchJson(`https://api.openf1.org/v1/sessions?session_key=${sessionKey}`, 5000)
+          .then((data: any) => {
+            if (Array.isArray(data) && data[0]) {
+              const s = data[0];
+              setSessionMeta({
+                meeting_name: s.meeting_name || s.circuit_short_name || `Session ${sessionKey}`,
+                circuit_short_name: s.circuit_short_name || "",
+                country_name: s.country_name || "",
+                year: s.year || 2024,
+              });
+            }
+          })
+          .catch(() => {});
+      }
+
+      // Fetch Weather for this session
+      fetchJson(`https://api.openf1.org/v1/weather?session_key=${sessionKey}`, 5000)
+        .then((data: any) => {
+          if (Array.isArray(data) && data.length > 0) {
+            const w = data[data.length - 1];
+            setWeatherData({
+              air_temperature: num(w.air_temperature) ?? 28.5,
+              track_temperature: num(w.track_temperature) ?? 34.0,
+              humidity: num(w.humidity) ?? 72,
+              wind_speed: num(w.wind_speed) ?? 6.5,
+              rainfall: num(w.rainfall) ?? 0,
+            });
+          }
+        })
+        .catch(() => {});
 
       if (Array.isArray(lbData) && lbData.length > 0) {
         const fromLb = new Map<number, RankDriverMeta>();
@@ -442,6 +782,27 @@ export function PitwallShell() {
 
   const canReplay = rawLaps.length > 0 && maxLap > 0 && durationSec > 0;
 
+  const sessionBests = useMemo(() => {
+    let minS1 = Infinity;
+    let minS2 = Infinity;
+    let minS3 = Infinity;
+    for (const l of rawLaps) {
+      const s1 = num(l.duration_sector_1);
+      const s2 = num(l.duration_sector_2);
+      const s3 = num(l.duration_sector_3);
+      if (s1 && s1 > 10 && s1 < minS1) minS1 = s1;
+      if (s2 && s2 > 10 && s2 < minS2) minS2 = s2;
+      if (s3 && s3 > 10 && s3 < minS3) minS3 = s3;
+    }
+    return {
+      minS1: minS1 === Infinity ? 30.2 : minS1,
+      minS2: minS2 === Infinity ? 38.1 : minS2,
+      minS3: minS3 === Infinity ? 25.8 : minS3,
+    };
+  }, [rawLaps]);
+
+  const is2026 = sessionKey >= 11300 || sessionMeta?.year === 2026;
+
   const board: LeaderboardRow[] = useMemo(() => {
     let rows: LeaderboardRow[] = [];
     if (canReplay && (elapsedSec > 0 || playing || currentLap > 0)) {
@@ -455,7 +816,16 @@ export function PitwallShell() {
       1,
       currentLap || leaderLapAt(rawLaps, elapsedSec),
     );
-    return applyTyreAndPit(rows, stints, pits, lapForTyre);
+    const withTyres = applyTyreAndPit(rows, stints, pits, lapForTyre);
+
+    // Dynamically compute live sector progress and 2026 MOM / Battery / Clipping
+    return withTyres.map((r) => {
+      const liveData = computeDriverLiveLap(rawLaps, r.driver_number, elapsedSec, is2026, sessionBests, r.live_rank);
+      return {
+        ...r,
+        ...liveData,
+      };
+    });
   }, [
     canReplay,
     rawLaps,
@@ -466,6 +836,8 @@ export function PitwallShell() {
     finalBoard,
     stints,
     pits,
+    is2026,
+    sessionBests,
   ]);
 
   const driverRow = board.find((b) => b.driver_number === selected);
@@ -527,6 +899,37 @@ export function PitwallShell() {
     <div className="flex min-h-dvh flex-col">
       <TimingHeader />
 
+      <div className="mx-3 mt-1 sm:mx-4">
+        {showCountdown ? (
+          <div className="relative">
+            <LiveCountdownBanner />
+            <button
+              onClick={() => setShowCountdown(false)}
+              className="absolute top-2 right-2 z-20 text-[11px] text-muted hover:text-fg bg-surface/90 hover:bg-surface-2 rounded-md px-2 py-0.5 border border-border transition-colors"
+            >
+              ✕ Thu nhỏ
+            </button>
+          </div>
+        ) : (
+          <div className="flex items-center justify-between gap-2 px-3 py-1.5 rounded-md bg-surface border border-border/80 text-xs">
+            <div className="flex items-center gap-2 truncate">
+              <span className="size-2 rounded-full bg-red-500 animate-pulse" />
+              <span className="font-semibold text-fg">Chặng Tiếp Theo: F1 2026</span>
+              <span className="text-muted truncate hidden sm:inline">
+                · Múi giờ của bạn: <b className="text-cyan-400 font-mono">{Intl.DateTimeFormat().resolvedOptions().timeZone}</b>
+              </span>
+            </div>
+            <button
+              onClick={() => setShowCountdown(true)}
+              className="shrink-0 font-mono text-[11px] text-red-400 hover:text-red-300 font-medium underline flex items-center gap-1"
+            >
+              <span>Đếm ngược chặng 2026</span>
+              <span>▾</span>
+            </button>
+          </div>
+        )}
+      </div>
+
       {isOpenF1Key(sessionKey) && (
         <div
           className={cn(
@@ -568,15 +971,63 @@ export function PitwallShell() {
                   setSide("driver");
                 }}
                 mode={canReplay ? "live" : "result"}
+                circuitInfo={{
+                  name: sessionMeta?.meeting_name,
+                  country:
+                    sessionMeta?.country_name ||
+                    (sessionKey === 11377
+                      ? "Azerbaijan"
+                      : sessionKey === 9606
+                        ? "Singapore"
+                        : undefined),
+                  year:
+                    sessionMeta?.year ||
+                    (sessionKey >= 11300 ? 2026 : 2024),
+                  session_name: "Race",
+                }}
+                weather={
+                  weatherData || {
+                    air_temperature: 29.5,
+                    track_temperature: 34.2,
+                    humidity: 75,
+                    wind_speed: 6.8,
+                    rainfall: 0,
+                  }
+                }
+                trackStatus="Track Clear"
+                elapsedSec={elapsedSec}
               />
             </div>
 
-            <div className="flex h-[min(42vh,360px)] w-full shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-surface lg:h-auto lg:min-h-0 lg:w-[380px] lg:max-w-[40%]">
-              <div className="flex gap-1 border-b border-border p-2">
+            {/* Drag Handle to Resize Panel */}
+            <div
+              onMouseDown={startResizing}
+              className={cn(
+                "hidden lg:flex w-2.5 shrink-0 cursor-col-resize items-center justify-center rounded transition-colors group select-none",
+                isDragging ? "bg-red-500/40" : "hover:bg-red-500/25 active:bg-red-500/40"
+              )}
+              title="Kéo sang trái / phải để điều chỉnh kích thước"
+            >
+              <div
+                className={cn(
+                  "h-10 w-1 rounded-full transition-colors",
+                  isDragging ? "bg-red-500" : "bg-border group-hover:bg-red-400"
+                )}
+              />
+            </div>
+
+            <div
+              style={{ width: isMaximized ? "60vw" : `${sideWidth}px` }}
+              className={cn(
+                "flex h-[min(45vh,400px)] w-full shrink-0 flex-col overflow-hidden rounded-lg border border-border bg-surface transition-[width] duration-75 lg:h-auto lg:min-h-0",
+                isDragging && "select-none transition-none"
+              )}
+            >
+              <div className="flex flex-wrap items-center gap-1 border-b border-border p-2">
                 <Button
                   size="sm"
                   variant={side === "driver" ? "secondary" : "ghost"}
-                  className="flex-1"
+                  className="flex-1 text-xs"
                   onClick={() => setSide("driver")}
                 >
                   Driver
@@ -584,7 +1035,7 @@ export function PitwallShell() {
                 <Button
                   size="sm"
                   variant={side === "stints" ? "secondary" : "ghost"}
-                  className="flex-1"
+                  className="flex-1 text-xs"
                   onClick={() => setSide("stints")}
                 >
                   Stints
@@ -592,10 +1043,37 @@ export function PitwallShell() {
                 <Button
                   size="sm"
                   variant={side === "sql" ? "secondary" : "ghost"}
-                  className="flex-1"
+                  className="flex-1 text-xs"
                   onClick={() => setSide("sql")}
                 >
                   SQL
+                </Button>
+                <Button
+                  size="sm"
+                  variant={side === "telemetry" ? "secondary" : "ghost"}
+                  className="flex-1 text-xs font-semibold text-emerald-400"
+                  onClick={() => setSide("telemetry")}
+                >
+                  Telemetry
+                </Button>
+                <Button
+                  size="sm"
+                  variant={side === "track" ? "secondary" : "ghost"}
+                  className="flex-1 text-xs font-semibold text-cyan-400"
+                  onClick={() => setSide("track")}
+                >
+                  Track Map
+                </Button>
+
+                {/* Quick Maximize / Restore Toggle */}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="hidden lg:flex h-7 px-2 text-[11px] font-mono text-muted hover:text-fg ml-1 border-border/80"
+                  onClick={() => setIsMaximized((prev) => !prev)}
+                  title={isMaximized ? "Thu nhỏ về kích thước chuẩn" : "Mở rộng 60% màn hình"}
+                >
+                  {isMaximized ? "⤡ 440px" : "⤢ Rộng 60%"}
                 </Button>
               </div>
               <div className="min-h-0 flex-1 overflow-hidden">
@@ -604,6 +1082,7 @@ export function PitwallShell() {
                     driver={driverList}
                     row={driverRow}
                     laps={driverLaps}
+                    is2026={is2026}
                   />
                 ) : side === "stints" ? (
                   <StintPitPanel
@@ -614,7 +1093,7 @@ export function PitwallShell() {
                     meta={meta}
                     scope="selected"
                   />
-                ) : (
+                ) : side === "sql" ? (
                   <SqlPanel
                     sessionKey={sessionKey}
                     selected={selected}
@@ -623,6 +1102,25 @@ export function PitwallShell() {
                     driverLaps={driverLaps}
                     board={board}
                     canReplay={canReplay}
+                  />
+                ) : side === "telemetry" ? (
+                  <TelemetryComparePanel
+                    sessionKey={sessionKey}
+                    board={board}
+                    initialD1={selected || 1}
+                    initialD2={4}
+                    masterPlaying={playing}
+                    masterElapsed={elapsedSec}
+                    onSelectDriver={(num) => setSelected(num)}
+                  />
+                ) : (
+                  <TrackMapPanel
+                    sessionKey={sessionKey}
+                    masterPlaying={playing}
+                    masterElapsed={elapsedSec}
+                    board={board}
+                    selectedDriver={selected}
+                    onSelectDriver={(num) => setSelected(num)}
                   />
                 )}
               </div>

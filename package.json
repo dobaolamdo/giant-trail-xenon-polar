@@ -15,7 +15,19 @@
     "preview:stop": "node scripts/preview.mjs stop",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "crawl": "node pitwall-api/fast-crawler.js",
+    "crawl:all": "node pitwall-api/fast-crawler.js --all",
+    "crawl:meta": "node pitwall-api/fast-crawler.js --only-meta",
+    "crawl:3years": "node pitwall-api/fast-crawler.js --3years --only-meta",
+    "crawl:3years:full": "node pitwall-api/fast-crawler.js --3years",
+    "crawl:2024": "node pitwall-api/fast-crawler.js --year 2024",
+    "crawl:maxping": "node pitwall-api/maxping-crawler.js",
+    "crawl:maxping:3years": "node pitwall-api/maxping-crawler.js --3years",
+    "crawl:maxping:2026": "node pitwall-api/maxping-crawler.js --year 2026",
+    "crawl:maxping:sg": "node pitwall-api/maxping-crawler.js --session 9606",
+    "crawl:2026": "node pitwall-api/fast-crawler.js --year 2026",
+    "mongo:start": "D:\\pitwall-mongodb\\start-mongo.bat"
   },
   "dependencies": {
     "tslib": "^2.8.1",

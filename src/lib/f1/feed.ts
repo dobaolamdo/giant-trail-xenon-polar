@@ -36,7 +36,7 @@ function driversFromResult(session_key: number): { drivers: DriverDef[]; totalLa
     const pit2 = Math.min(totalLaps - 3, pit1 + 18 + (i % 6));
     return {
       driver_number: r.driver_number,
-      code: r.code,
+      code: r.code || `#${r.driver_number}`,
       full_name: r.full_name,
       team_name: r.team_name,
       team_colour: r.team_colour,
@@ -45,7 +45,7 @@ function driversFromResult(session_key: number): { drivers: DriverDef[]; totalLa
       consistency: 0.12 + (i % 6) * 0.02,
       pitLaps: twoStop ? [pit1, pit2] : [pit1],
       compounds: twoStop ? ["SOFT", "HARD", "SOFT"] : ["MEDIUM", "HARD"],
-      dnfLap: r.status === "DNF" ? Math.max(8, Math.min(r.laps, totalLaps - 2)) : undefined,
+      dnfLap: r.status === "DNF" ? Math.max(8, Math.min(r.laps ?? 20, totalLaps - 2)) : undefined,
     };
   });
   return { drivers, totalLaps };

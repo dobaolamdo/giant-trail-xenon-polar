@@ -101,6 +101,7 @@ export function rankFromElapsed(
     driver_number: number;
     laps: number;
     total: number;
+    progress: number; // continuous laps completed + current lap fraction
     last: number | null;
     dnf: boolean;
   };
@@ -116,49 +117,98 @@ export function rankFromElapsed(
     let cum = 0;
     let completed = 0;
     let last: number | null = null;
+    let curLapDur: number | null = null;
+
     for (const row of seq) {
       if (cum + row.dur <= t + 1e-9) {
         cum += row.dur;
         completed += 1;
         last = row.dur;
       } else {
+        curLapDur = row.dur;
         break;
       }
     }
+
+    const curLapElapsed = Math.max(0, t - cum);
+    const frac =
+      curLapDur && curLapDur > 0
+        ? Math.min(0.999, curLapElapsed / curLapDur)
+        : 0;
+
     entries.push({
       driver_number,
       laps: completed,
       total: cum,
+      progress: completed + frac,
       last,
       dnf: dnfDrivers.has(driver_number),
     });
   }
 
+  // Sort by DNF, then continuous virtual progress descending
   entries.sort((a, b) => {
     if (a.dnf !== b.dnf) return a.dnf ? 1 : -1;
-    if (a.laps !== b.laps) return b.laps - a.laps;
+    if (Math.abs(b.progress - a.progress) > 1e-5) {
+      return b.progress - a.progress;
+    }
     return a.total - b.total;
   });
 
-  const leader = entries.find((e) => !e.dnf && e.laps > 0);
-  const leaderT = leader?.total ?? 0;
-  const leaderLaps = leader?.laps ?? 0;
+  const leader = entries.find((e) => !e.dnf && e.progress > 0);
+  const leaderProgress = leader?.progress ?? 0;
+  const leaderSeq = leader ? by.get(leader.driver_number) ?? [] : [];
+
+  // Helper to find exact race time when the leader was at progress p
+  const leaderTimeAtProgress = (p: number): number => {
+    if (p <= 0) return 0;
+    const wholeLap = Math.floor(p);
+    const fraction = p - wholeLap;
+    let cum = 0;
+    for (let i = 0; i < wholeLap && i < leaderSeq.length; i++) {
+      cum += leaderSeq[i]?.dur ?? 90;
+    }
+    const nextDur = leaderSeq[wholeLap]?.dur ?? 90;
+    return cum + fraction * nextDur;
+  };
+
+  let prevGap: number | null = null;
 
   return entries.map((e, i) => {
     const m = meta.get(e.driver_number);
-    let gap: number | null = null;
+    let gapToLeader: number | null = null;
+    let gapToAhead: number | null = null;
+
     if (!e.dnf && leader && e.driver_number !== leader.driver_number) {
-      if (e.laps < leaderLaps) gap = null;
-      else gap = Math.max(0, e.total - leaderT);
+      if (leaderProgress - e.progress > 1.0) {
+        // More than 1 lap behind: gap is lap delta or time
+        gapToLeader = Math.max(0, t - leaderTimeAtProgress(e.progress));
+      } else {
+        // Continuous real-time gap in seconds
+        const tLeaderAtSameSpot = leaderTimeAtProgress(e.progress);
+        gapToLeader = Math.max(0.05, t - tLeaderAtSameSpot);
+      }
     }
+
+    if (i > 0 && !e.dnf && gapToLeader != null) {
+      if (prevGap == null) {
+        gapToAhead = gapToLeader;
+      } else {
+        gapToAhead = Math.max(0.02, gapToLeader - prevGap);
+      }
+    }
+    if (!e.dnf) {
+      prevGap = gapToLeader;
+    }
+
     return {
       live_rank: i + 1,
       driver_number: e.driver_number,
       full_name: m?.full_name ?? `#${e.driver_number}`,
       team_name: m?.team_name ?? "",
       team_colour: (m?.team_colour ?? "888888").replace(/^#/, ""),
-      gap_to_leader: e.dnf ? null : gap,
-      gap_to_car_ahead: null,
+      gap_to_leader: e.dnf ? null : gapToLeader,
+      gap_to_car_ahead: e.dnf ? null : gapToAhead,
       last_lap: e.last,
       status: e.dnf ? ("DNF" as const) : null,
       position_change: 0,

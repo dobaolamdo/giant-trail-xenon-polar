@@ -14,6 +14,25 @@ export type LeaderboardRow = {
   position_change?: number;
   code?: string;
   points?: number;
+  s1?: number | null;
+  s2?: number | null;
+  s3?: number | null;
+  s1_state?: "active" | "done" | "pb" | "purple" | "pending";
+  s2_state?: "active" | "done" | "pb" | "purple" | "pending";
+  s3_state?: "active" | "done" | "pb" | "purple" | "pending";
+  best_lap?: number | null;
+  overtake_mode?: boolean;
+  battery_soc?: number;
+  deployment_kw?: number;
+  is_clipping?: boolean;
+  speed?: number;
+  gear?: number | string;
+  rpm?: number;
+  throttle?: number;
+  brake?: number;
+  drs?: number;
+  aero_mode?: "X-MODE" | "Z-MODE";
+  lap_fraction?: number;
 };
 
 export type LapHistoryRow = {
@@ -81,4 +100,64 @@ export type SessionSnapshotCar = {
   last_lap: number | null;
   status?: string | null;
   compound?: string;
+  retired?: boolean;
+  pit_this_lap?: boolean;
+  sc_this_lap?: boolean;
+  sectors?: any;
+};
+
+export type SessionSnapshot = {
+  time: number;
+  completed_laps: number;
+  cars: SessionSnapshotCar[];
+};
+
+export type DriverStandingRow = {
+  position: number;
+  driver_number: number;
+  full_name: string;
+  team_name: string;
+  team_colour: string;
+  code: string;
+  points: number;
+  wins: number;
+  podiums: number;
+};
+
+export type ConstructorStandingRow = {
+  position: number;
+  team_name: string;
+  team_colour: string;
+  points: number;
+  wins: number;
+};
+
+export type MeetingRow = {
+  round: number;
+  year: number;
+  session_key: number;
+  meeting_name: string;
+  circuit_short_name: string;
+  country_name: string;
+  date_start: string;
+  status: "complete" | "upcoming" | "live";
+  winner_name?: string;
+};
+
+export type RaceResultRow = {
+  position: number;
+  driver_number: number;
+  full_name: string;
+  team_name: string;
+  team_colour: string;
+  gap_to_leader: number | null;
+  status: "Classified" | "DNF";
+  points: number;
+  code?: string;
+  laps?: number;
+};
+
+export type SeasonRow = {
+  year: number;
+  winner_name?: string;
 };

@@ -112,8 +112,8 @@ export function Get_Live_Leaderboard(session_key: number, elapsed = 0): Leaderbo
   const feed = getFeed(session_key);
   if (!feed) return resultBoard(session_key);
   const { a, b, f } = snapshotWindow(feed, elapsed);
-  const byA = new Map(a.cars.map((c) => [c.driver_number, c]));
-  const mixed: SessionSnapshotCar[] = b.cars.map((carB) => {
+  const byA = new Map(a.cars.map((c: SessionSnapshotCar) => [c.driver_number, c]));
+  const mixed: SessionSnapshotCar[] = b.cars.map((carB: SessionSnapshotCar) => {
     const carA = byA.get(carB.driver_number) ?? carB;
     const pit =
       f > 0.18 && f < 0.82
@@ -129,11 +129,11 @@ export function Get_Live_Leaderboard(session_key: number, elapsed = 0): Leaderbo
       compound: f < 0.5 ? carA.compound : carB.compound,
     };
   });
-  const prev = new Map(
+  const prev = new Map<number, number>(
     a.cars
       .slice()
-      .sort((x, y) => Number(x.retired) - Number(y.retired) || x.cumulative - y.cumulative)
-      .map((c, i) => [c.driver_number, i + 1] as const),
+      .sort((x: SessionSnapshotCar, y: SessionSnapshotCar) => Number(x.retired) - Number(y.retired) || x.cumulative - y.cumulative)
+      .map((c: SessionSnapshotCar, i: number) => [c.driver_number, i + 1] as [number, number]),
   );
   const rows = boardFromCars(feed, mixed, prev);
   if (a.completed_laps === 0 && f < 0.02) {
@@ -167,7 +167,7 @@ function sessionBests(feed: RaceFeed, upToLap: number) {
 
 function completedLapsForDriver(feed: RaceFeed, driver_number: number, elapsed: number): number {
   const { a } = snapshotWindow(feed, elapsed);
-  const car = a.cars.find((c) => c.driver_number === driver_number);
+  const car = a.cars.find((c: SessionSnapshotCar) => c.driver_number === driver_number);
   if (car?.retired) {
     return feed.lapsByDriver.get(driver_number)?.length ?? 0;
   }

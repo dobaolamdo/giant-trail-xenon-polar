@@ -240,13 +240,33 @@ export function TimingHeader() {
                           ? "Replay"
                           : "Paused"}
               </Badge>
-              <span className="rounded-md bg-surface-2 px-2 py-1 font-mono text-xs tracking-wide text-fg tabular">
-                {isOpenF1
-                  ? `key ${sessionKey}`
-                  : meeting
-                    ? `${meeting.year} · R${meeting.round}`
-                    : session?.session_name}
-              </span>
+              <select
+                aria-label="Chọn chặng đua nhanh"
+                value={sessionKey}
+                onChange={(e) => usePitwall.getState().setSessionKey(Number(e.target.value))}
+                className="h-7 max-w-[190px] sm:max-w-none text-[11px] font-mono bg-surface-2 border border-border/80 rounded px-1.5 text-fg focus:outline-none focus:ring-1 focus:ring-red-500 cursor-pointer"
+              >
+                <optgroup label="⚡ Big Data (MongoDB Ổ D:)">
+                  <option value={9606}>🇸🇬 Singapore GP 2024 (Big Data Ổ D:)</option>
+                  <option value={11377}>🇦🇿 Baku GP 2026 (Live Sim)</option>
+                </optgroup>
+                <optgroup label="🏁 Mùa giải 2024">
+                  <option value={9472}>🇧🇭 Bahrain GP 2024</option>
+                  <option value={9490}>🇸🇦 Saudi Arabian GP 2024</option>
+                  <option value={9507}>🇦🇺 Australian GP 2024</option>
+                  <option value={9515}>🇲🇨 Monaco GP 2024</option>
+                  <option value={9540}>🇬🇧 British GP 2024</option>
+                  <option value={9565}>🇮🇹 Italian GP 2024</option>
+                  <option value={9580}>🇧🇪 Belgian GP 2024</option>
+                  <option value={9620}>🇺🇸 United States GP 2024</option>
+                  <option value={9640}>🇧🇷 Sao Paulo GP 2024</option>
+                  <option value={9660}>🇦🇪 Abu Dhabi GP 2024</option>
+                </optgroup>
+                <optgroup label="🏎️ Mùa giải 2023">
+                  <option value={7953}>🇧🇭 Sakhir GP 2023</option>
+                  <option value={7779}>🇸🇦 Jeddah GP 2023</option>
+                </optgroup>
+              </select>
             </div>
           )}
         </div>

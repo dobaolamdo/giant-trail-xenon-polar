@@ -39,8 +39,8 @@ type PitwallState = {
 
 export const usePitwall = create<PitwallState>((set) => ({
   view: "timing",
-  year: 2026,
-  sessionKey: BAKU_RACE_KEY,
+  year: 2024,
+  sessionKey: 9606,
   standingsTab: "calendar",
   archiveElapsed: 0,
   archiveDuration: 0,
