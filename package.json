@@ -26,7 +26,8 @@
     "crawl:maxping:3years": "node pitwall-api/maxping-crawler.js --3years",
     "crawl:maxping:2026": "node pitwall-api/maxping-crawler.js --year 2026",
     "crawl:maxping:sg": "node pitwall-api/maxping-crawler.js --session 9606",
-    "crawl:2026": "node pitwall-api/fast-crawler.js --year 2026",
+    "crawl:2026": "node pitwall-api/maxping-crawler.js --year 2026",
+    "crawl:2026:baku": "node pitwall-api/maxping-crawler.js --session 11377",
     "mongo:start": "D:\\pitwall-mongodb\\start-mongo.bat"
   },
   "dependencies": {

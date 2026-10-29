@@ -444,11 +444,10 @@ async function main() {
         const list = await fetchWithRetry(`https://api.openf1.org/v1/sessions?session_name=Race&year=${y}`);
         if (Array.isArray(list) && list.length > 0) {
           sessionKeys.push(...list.map((s) => s.session_key).filter(Boolean));
-        } else if (y === 2026) {
-          sessionKeys.push(11377);
         }
-      } catch {
-        if (y === 2026) sessionKeys.push(11377);
+      } catch {}
+      if (y === 2026 && !sessionKeys.includes(11377)) {
+        sessionKeys.unshift(11377); // Luôn nạp Baku GP 2026 demo trước tiên
       }
     } else {
       // Default: 2024 season (24 races)
