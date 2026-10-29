@@ -60,20 +60,20 @@ Hệ thống xử lý bài toán **Big Data thực tế** với khối lượng 
 - MongoDB $\ge 7.0$ (Cài đặt tại thư mục `D:\pitwall-mongodb`)
 - Tài khoản MySQL Aiven Cloud
 
-### 2. Khởi động hệ thống
+### 2. Khởi động nhanh (1 Lệnh duy nhất)
 ```bash
-# 1. Khởi động MongoDB Local trên Ổ D:
-& "D:\pitwall-mongodb\bin\mongod.exe" --dbpath "D:\pitwall-mongodb\data" --logpath "D:\pitwall-mongodb\logs\mongod.log" --port 27017 --bind_ip 127.0.0.1
+# Bật toàn bộ MongoDB + Backend API + Frontend Web:
+npm run start:all
 
-# 2. Cài đặt thư viện
-npm install
-cd pitwall-api && npm install && cd ..
+# Hoặc click đúp file start-all.bat trên Windows
+```
 
-# 3. Khởi động Backend API (Port 3001)
-node pitwall-api/index.js
+### 3. Tắt toàn bộ nhanh (1 Lệnh duy nhất)
+```bash
+# Dừng và giải phóng sạch sẽ các cổng (27017, 3001, 8080):
+npm run stop:all
 
-# 4. Khởi động Frontend Dashboard (Port 8080)
-npm run dev
+# Hoặc click đúp file stop-all.bat trên Windows
 ```
 
 Truy cập trình duyệt: [http://localhost:8080](http://localhost:8080)

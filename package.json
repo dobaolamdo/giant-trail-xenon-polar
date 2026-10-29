@@ -28,6 +28,8 @@
     "crawl:maxping:sg": "node pitwall-api/maxping-crawler.js --session 9606",
     "crawl:2026": "node pitwall-api/maxping-crawler.js --year 2026",
     "crawl:2026:baku": "node pitwall-api/maxping-crawler.js --session 11377",
+    "start:all": "node scripts/start-all.mjs",
+    "stop:all": "node scripts/stop-all.mjs",
     "mongo:start": "D:\\pitwall-mongodb\\start-mongo.bat"
   },
   "dependencies": {
